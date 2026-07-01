@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ozon Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section id="loginView" class="panel login">
+        <div>
+          <h1>Ozon Dashboard</h1>
+          <p>Войдите, чтобы открыть сводку и товары.</p>
+        </div>
+        <form id="loginForm">
+          <label>
+            <span>Логин</span>
+            <input id="login" name="login" autocomplete="username" required />
+          </label>
+          <label>
+            <span>Пароль</span>
+            <input id="password" name="password" type="password" autocomplete="current-password" required />
+          </label>
+          <button type="submit">Войти</button>
+        </form>
+      </section>
+
+      <section id="appView" class="hidden">
+        <header class="appHeader">
+          <div class="appBrand">
+            <strong>Ozon Dashboard</strong>
+            <span id="userLine" class="small"></span>
+          </div>
+          <nav class="tabs" aria-label="Разделы">
+            <button id="dashboardTab" class="tabButton active" type="button">Дашборд</button>
+            <button id="tnvedTab" class="tabButton" type="button">Товары</button>
+            <button id="cacheTab" class="tabButton" type="button">Кэш</button>
+            <button id="adminTab" class="tabButton hidden" type="button">Админ панель</button>
+          </nav>
+          <div class="accountArea">
+            <div class="accountSwitcher">
+              <button id="accountButton" type="button" class="accountButton">
+                <span id="accountLabel">Филькина Грамота а · ID 3801</span>
+                <span class="accountArrow">▾</span>
+              </button>
+              <div id="accountDropdown" class="accountDropdown hidden">
+                <div id="accountList" class="accountList"></div>
+                <form id="accountForm" class="accountForm">
+                  <h3>Добавить аккаунт</h3>
+                  <label>
+                    <span>Логин</span>
+                    <input id="accountLogin" autocomplete="username" placeholder="Логин" />
+                  </label>
+                  <label>
+                    <span>Пароль</span>
+                    <input id="accountPassword" type="password" autocomplete="current-password" placeholder="Пароль" />
+                  </label>
+                  <label>
+                    <span>Client ID</span>
+                    <input id="accountClientId" inputmode="numeric" autocomplete="off" placeholder="3801" />
+                  </label>
+                  <button type="submit">Добавить аккаунт</button>
+                </form>
+              </div>
+            </div>
+            <button id="logoutButton" type="button" class="headerLogout">Выйти</button>
+          </div>
+        </header>
+
+        <section id="adminView" class="hidden">
+        <section id="adminPanel" class="panel admin">
+          <h2>Админка владельца</h2>
+          <div class="adminStack">
+            <form id="ozonConfigForm" class="adminKeyForm">
+              <div>
+                <h3>Ozon</h3>
+                <p class="small">Ключи Ozon сохранены на сервере. В интерфейсе они не показываются.</p>
+              </div>
+              <label>
+                <span>Название</span>
+                <input id="adminAccountName" autocomplete="off" />
+              </label>
+              <label>
+                <span>Client ID</span>
+                <input id="adminClientId" inputmode="numeric" autocomplete="off" />
+              </label>
+              <label>
+                <span>API Key</span>
+                <input id="adminApiKey" type="password" autocomplete="new-password" placeholder="Оставьте пустым, если не меняете" />
+              </label>
+              <div class="adminActions">
+                <button type="submit">Сохранить</button>
+                <button id="clearOzonKey" type="button" class="dangerButton">Очистить</button>
+              </div>
+            </form>
+
+            <form id="performanceConfigForm" class="adminKeyForm">
+              <div>
+                <h3>Ozon Performance API</h3>
+                <p class="small">Ключи Ozon Performance API сохранены на сервере. В интерфейсе они не показываются.</p>
+              </div>
+              <label>
+                <span>Client ID</span>
+                <input id="performanceClientId" autocomplete="off" />
+              </label>
+              <label>
+                <span>Client Secret</span>
+                <input id="performanceClientSecret" type="password" autocomplete="new-password" placeholder="Оставьте пустым, если не меняете" />
+              </label>
+              <div class="adminActions">
+                <button type="submit">Сохранить</button>
+                <button id="clearPerformanceKey" type="button" class="dangerButton">Очистить</button>
+              </div>
+            </form>
+
+            <form id="userForm">
+              <h3>Доступ</h3>
+              <label>
+                <span>Логин</span>
+                <input id="newUserLogin" autocomplete="off" />
+              </label>
+              <label>
+                <span>Пароль</span>
+                <input id="newUserPassword" type="password" autocomplete="new-password" />
+              </label>
+              <button type="submit">Добавить / обновить</button>
+            </form>
+          </div>
+          <div id="usersList" class="usersList"></div>
+        </section>
+        </section>
+
+        <section id="dashboardView">
+          <section class="panel controls dailyControls">
+            <div>
+              <h1>Ежедневные отчеты и прибыль</h1>
+              <p>Финальная прибыль показывается по выбранному периоду на основе данных Ozon.</p>
+            </div>
+            <form id="summaryForm" class="summaryForm">
+              <label class="periodField">
+                <span>Период</span>
+                <div id="periodPicker" class="periodPicker">
+                  <select id="periodMode" class="nativePeriodSelect" name="period_mode" aria-hidden="true" tabindex="-1">
+                    <option value="day">День</option>
+                    <option value="week">Неделя</option>
+                    <option value="month" selected>Месяц</option>
+                    <option value="custom">Свой период</option>
+                  </select>
+                  <button id="periodButton" class="periodButton" type="button" aria-haspopup="true" aria-expanded="false">
+                    <span id="periodButtonText">Месяц</span>
+                    <span class="periodArrow">▾</span>
+                  </button>
+                  <div id="periodMenu" class="periodMenu hidden">
+                    <button class="periodOption" type="button" data-mode="day">День</button>
+                    <button class="periodOption" type="button" data-mode="week">Неделя</button>
+                    <button id="monthTrigger" class="periodOption monthTrigger" type="button" data-mode="month">
+                      <span>Месяц</span>
+                      <span>›</span>
+                    </button>
+                    <button class="periodOption" type="button" data-mode="custom">Свой период</button>
+                  </div>
+                  <div id="monthMenu" class="monthMenu hidden"></div>
+                </div>
+              </label>
+              <label class="comparisonToggle">
+                <input id="hideComparison" type="checkbox" />
+                <span>Скрыть сравнение</span>
+              </label>
+              <label>
+                <span>С даты</span>
+                <input id="dateFrom" name="date_from" type="date" required />
+              </label>
+              <label>
+                <span>По дату</span>
+                <input id="dateTo" name="date_to" type="date" required />
+              </label>
+              <div class="comparisonGroup">
+                <span class="comparisonTitle">Сравнение</span>
+                <label>
+                  <span>С даты</span>
+                  <input id="compareDateFrom" name="compare_date_from" type="date" required />
+                </label>
+                <label>
+                  <span>По дату</span>
+                  <input id="compareDateTo" name="compare_date_to" type="date" required />
+                </label>
+              </div>
+              <button type="submit">Показать</button>
+            </form>
+          </section>
+
+          <section id="status" class="status">Выберите период и нажмите “Показать”.</section>
+
+          <section class="dailyOverview">
+            <article class="reportBlock">
+              <h2>Продажи и возвраты</h2>
+              <strong id="revenue" class="reportValue">-</strong>
+              <div id="salesTrack" class="segmentTrack"></div>
+              <div class="reportList">
+                <div><span class="dot green"></span><span>Выручка</span><strong id="revenueSales">-</strong></div>
+                <div><span class="dot teal"></span><span>Программы партнеров</span><strong id="partnerProgramsValue">-</strong></div>
+                <div><span class="dot mint"></span><span>Баллы за скидки</span><strong id="discountPointsValue">-</strong></div>
+              </div>
+            </article>
+
+            <article class="reportBlock">
+              <h2>Услуги</h2>
+              <strong id="servicesTotal" class="reportValue">-</strong>
+              <div id="servicesTrack" class="segmentTrack"></div>
+              <div class="reportList">
+                <div><span class="dot yellow"></span><span>Комиссия</span><strong id="commissionValue">-</strong></div>
+                <div><span class="dot sky"></span><span>Логистика и услуги</span><strong id="logisticsValue">-</strong></div>
+                <div><span class="dot purple"></span><span>Реклама</span><strong id="adsValue">-</strong></div>
+                <div><span class="dot teal"></span><span>Остальные</span><strong id="otherServicesValue">-</strong></div>
+              </div>
+            </article>
+
+            <article class="reportBlock">
+              <h2>Налоги и затраты</h2>
+              <strong id="expenses" class="reportValue">-</strong>
+              <div id="costsTrack" class="segmentTrack"></div>
+              <div id="costsList" class="reportList">
+                <div><span class="dot blue"></span><span>Платное хранение</span><strong id="paidStorageCostValue">-</strong></div>
+              </div>
+            </article>
+
+            <article class="reportBlock profitBlock">
+              <h2>Операционная прибыль</h2>
+              <strong id="profit" class="reportValue">-</strong>
+              <div class="profitRows">
+                <div><span>Маржинальность</span><strong id="profitMargin">-</strong></div>
+                <div><span>Рентабельность</span><strong id="profitRoi">-</strong></div>
+                <div><span>ДРР</span><strong id="profitDrr">-</strong></div>
+              </div>
+              <div class="miniChart">
+                <span></span><span></span><span></span><span></span><span></span>
+              </div>
+            </article>
+          </section>
+
+          <section class="dailyCards">
+            <article class="dailyCard">
+              <h3>Заказы</h3>
+              <span id="ordersPeriod" class="cardDate">-</span>
+              <strong id="orders">-</strong>
+              <small id="ordersNote">за период</small>
+              <div class="miniBars orange"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>Продажи</h3>
+              <span id="salesPeriod" class="cardDate">-</span>
+              <strong id="salesCardAmount">-</strong>
+              <small>сумма продаж</small>
+              <div class="miniBars green"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>Логистика</h3>
+              <span id="logisticsPeriod" class="cardDate">-</span>
+              <strong id="logisticsCardAmount">-</strong>
+              <small>услуги и доставка</small>
+              <div class="miniBars sky"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>Реклама</h3>
+              <span id="adsPeriod" class="cardDate">-</span>
+              <strong id="ads">-</strong>
+              <small>расходы на продвижение</small>
+              <div class="miniBars purple"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>Комиссии</h3>
+              <span id="commissionPeriod" class="cardDate">-</span>
+              <strong id="commission">-</strong>
+              <small>комиссии Ozon</small>
+              <div class="miniBars teal"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>Все услуги</h3>
+              <span id="servicesPeriod" class="cardDate">-</span>
+              <strong id="allServicesCardAmount">-</strong>
+              <small>услуги всего</small>
+              <div class="miniBars blue"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+          </section>
+
+          <section class="dailyCards orderBreakdownCards">
+            <article class="dailyCard">
+              <h3>FBO заказано</h3>
+              <span id="fboOrderedPeriod" class="cardDate">-</span>
+              <strong id="fboOrdered">-</strong>
+              <small>заказов FBO</small>
+              <div class="miniBars orange"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>FBO выкуплено</h3>
+              <span id="fboDeliveredPeriod" class="cardDate">-</span>
+              <strong id="fboDelivered">-</strong>
+              <small>доставлено FBO</small>
+              <div class="miniBars green"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>FBO возвраты</h3>
+              <span id="fboReturnsPeriod" class="cardDate">-</span>
+              <strong id="fboReturns">-</strong>
+              <small>возвратов FBO</small>
+              <div class="miniBars red"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>FBO отмены</h3>
+              <span id="fboCancelledPeriod" class="cardDate">-</span>
+              <strong id="fboCancelled">-</strong>
+              <small>отмен FBO</small>
+              <div class="miniBars purple"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>FBS заказы</h3>
+              <span id="fbsOrderedPeriod" class="cardDate">-</span>
+              <strong id="fbsOrdered">-</strong>
+              <small>заказов FBS</small>
+              <div class="miniBars orange"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>FBS выкуплено</h3>
+              <span id="fbsDeliveredPeriod" class="cardDate">-</span>
+              <strong id="fbsDelivered">-</strong>
+              <small>доставлено FBS</small>
+              <div class="miniBars green"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>FBS возвраты</h3>
+              <span id="fbsReturnsPeriod" class="cardDate">-</span>
+              <strong id="fbsReturns">-</strong>
+              <small>возвратов FBS</small>
+              <div class="miniBars red"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>FBS отмены</h3>
+              <span id="fbsCancelledPeriod" class="cardDate">-</span>
+              <strong id="fbsCancelled">-</strong>
+              <small>отмен FBS</small>
+              <div class="miniBars purple"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+            <article class="dailyCard">
+              <h3>Платное хранение</h3>
+              <span id="paidStoragePeriod" class="cardDate">-</span>
+              <strong id="paidStorageCardAmount">-</strong>
+              <small>за период</small>
+              <div class="miniBars blue"><span></span><span></span><span></span><span></span><span></span></div>
+            </article>
+          </section>
+
+          <section id="operationsSection" class="panel dashboardAnchorSection">
+            <h2>Все операции</h2>
+            <div id="operationRows" class="operationsGrid"></div>
+          </section>
+
+          <section id="categoryProfitSection" class="panel categoryProfitPanel dashboardAnchorSection">
+            <div class="panelTitleRow">
+              <div>
+                <h2>Прибыль по категориям</h2>
+                <p>Расчет всего и чистой прибыли до себестоимости по каждой категории.</p>
+              </div>
+              <div class="profitToolbar">
+                <label class="zeroToggle">
+                  <input id="categoryShowZero" type="checkbox" />
+                  <span>с нулем</span>
+                </label>
+                <input id="categoryProfitFilter" class="profitFilterInput" placeholder="Фильтр по категориям" />
+              </div>
+            </div>
+            <div class="tableWrap">
+              <table class="categoryProfitTable" data-profit-table="category">
+                <thead>
+                  <tr>
+                    <th><button type="button" data-sort-key="category">Категория</button></th>
+                    <th><button type="button" data-sort-key="items_count">Товаров</button></th>
+                    <th><button type="button" data-sort-key="revenue">Всего продано</button></th>
+                    <th><button type="button" data-sort-key="commission">Комиссии</button></th>
+                    <th><button type="button" data-sort-key="services">Услуги</button></th>
+                    <th><button type="button" data-sort-key="returns">Возвраты</button></th>
+                    <th><button type="button" data-sort-key="paid_storage">Платное хранение</button></th>
+                    <th><button type="button" data-sort-key="profit_before_cost">Чистая прибыль до себестоимости</button></th>
+                  </tr>
+                </thead>
+                <tbody id="categoryProfitRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="typeProfitSection" class="panel categoryProfitPanel typeProfitPanel dashboardAnchorSection">
+            <div class="panelTitleRow">
+              <div>
+                <h2>Прибыль по типам</h2>
+                <p>Расчет всего и чистой прибыли до себестоимости по каждому типу товара.</p>
+              </div>
+              <div class="profitToolbar">
+                <label class="zeroToggle">
+                  <input id="typeShowZero" type="checkbox" />
+                  <span>с нулем</span>
+                </label>
+                <input id="typeProfitFilter" class="profitFilterInput" placeholder="Фильтр по типам" />
+              </div>
+            </div>
+            <div class="tableWrap">
+              <table class="categoryProfitTable" data-profit-table="type">
+                <thead>
+                  <tr>
+                    <th><button type="button" data-sort-key="type">Тип товара</button></th>
+                    <th><button type="button" data-sort-key="items_count">Товаров</button></th>
+                    <th><button type="button" data-sort-key="revenue">Всего продано</button></th>
+                    <th><button type="button" data-sort-key="commission">Комиссии</button></th>
+                    <th><button type="button" data-sort-key="services">Услуги</button></th>
+                    <th><button type="button" data-sort-key="returns">Возвраты</button></th>
+                    <th><button type="button" data-sort-key="paid_storage">Платное хранение</button></th>
+                    <th><button type="button" data-sort-key="profit_before_cost">Чистая прибыль до себестоимости</button></th>
+                  </tr>
+                </thead>
+                <tbody id="typeProfitRows"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section id="articleProfitSection" class="panel categoryProfitPanel articleProfitPanel dashboardAnchorSection">
+            <div class="panelTitleRow">
+              <div>
+                <h2>Прибыль по артикулам</h2>
+                <p>Расчет всего и чистой прибыли до себестоимости по каждому артикулу.</p>
+              </div>
+              <input id="articleProfitFilter" class="profitFilterInput" placeholder="Фильтр по артикулам" />
+            </div>
+            <div class="tableWrap">
+              <table class="categoryProfitTable" data-profit-table="article">
+                <thead>
+                  <tr>
+                    <th><button type="button" data-sort-key="article">Артикул</button></th>
+                    <th><button type="button" data-sort-key="name">Название</button></th>
+                    <th><button type="button" data-sort-key="category">Категория</button></th>
+                    <th><button type="button" data-sort-key="type">Тип товара</button></th>
+                    <th><button type="button" data-sort-key="revenue">Всего продано</button></th>
+                    <th><button type="button" data-sort-key="commission">Комиссии</button></th>
+                    <th><button type="button" data-sort-key="services">Услуги</button></th>
+                    <th><button type="button" data-sort-key="returns">Возвраты</button></th>
+                    <th><button type="button" data-sort-key="paid_storage">Платное хранение</button></th>
+                    <th><button type="button" data-sort-key="profit_before_cost">Чистая прибыль до себестоимости</button></th>
+                  </tr>
+                </thead>
+                <tbody id="articleProfitRows"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section id="tnvedView" class="tnvedView hidden">
+          <section class="productsHeader">
+            <h1>Список товаров</h1>
+            <div id="productStatusTabs" class="productStatusTabs"></div>
+          </section>
+
+          <section class="ozonToolbar">
+            <div class="toolbarTitle">Поиск Ozon</div>
+            <div class="toolbarControls">
+              <input id="tnvedSearch" class="tnvedSearch" placeholder="Артикул, SKU, название, barcode" />
+              <label class="stockToggle">
+                <input id="tnvedOnlyStock" type="checkbox" />
+                <span>Только с остатками</span>
+              </label>
+              <div class="columnsMenu">
+                <button id="columnsButton" class="columnsButton" type="button">Столбцы</button>
+                <div id="columnsDropdown" class="columnsDropdown hidden"></div>
+              </div>
+              <button id="tnvedRefresh" class="refreshButton" type="button">Обновить Ozon</button>
+            </div>
+          </section>
+
+          <div id="tnvedMeta" class="tnvedMeta">Товары еще не загружены.</div>
+
+          <section class="tnvedTableShell">
+            <table class="tnvedTable">
+              <thead id="tnvedHead"></thead>
+              <tbody id="tnvedBody"></tbody>
+            </table>
+          </section>
+        </section>
+
+        <section id="cacheView" class="hidden">
+          <section class="panel cachePanel">
+            <div class="cacheHeader">
+              <div>
+                <h1>Кэш</h1>
+                <p>Товары хранятся на сервере и показываются сразу, а Ozon обновляется фоном каждые 5 минут.</p>
+              </div>
+              <button id="cacheRefresh" type="button">Обновить статус</button>
+            </div>
+            <div id="cacheStatus" class="cacheStatus">Кэш еще не проверен.</div>
+            <div id="cacheRows" class="cacheRows"></div>
+          </section>
+        </section>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
