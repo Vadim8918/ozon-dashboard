@@ -3,6 +3,7 @@ const appView = document.querySelector("#appView");
 const loginForm = document.querySelector("#loginForm");
 const summaryForm = document.querySelector("#summaryForm");
 const statusBox = document.querySelector("#status");
+const statusText = document.querySelector("#statusText");
 const periodMode = document.querySelector("#periodMode");
 const periodPicker = document.querySelector("#periodPicker");
 const periodButton = document.querySelector("#periodButton");
@@ -15,6 +16,9 @@ const dateFromInput = document.querySelector("#dateFrom");
 const dateToInput = document.querySelector("#dateTo");
 const compareDateFromInput = document.querySelector("#compareDateFrom");
 const compareDateToInput = document.querySelector("#compareDateTo");
+const downloadCostTemplateButton = document.querySelector("#downloadCostTemplate");
+const uploadCostTemplateButton = document.querySelector("#uploadCostTemplate");
+const costTemplateFileInput = document.querySelector("#costTemplateFile");
 const logoutButton = document.querySelector("#logoutButton");
 const userLine = document.querySelector("#userLine");
 const accountButton = document.querySelector("#accountButton");
@@ -140,6 +144,7 @@ const TNVED_COLUMNS = [
   { key: "price", title: "Цена", type: "number", defaultVisible: true },
   { key: "discount_price", title: "Цена со скидкой", type: "number", defaultVisible: true },
   { key: "old_price", title: "Цена до скидки", type: "number", defaultVisible: true },
+  { key: "cost_price", title: "Себестоимость", type: "number", defaultVisible: true },
 ];
 
 const DEFAULT_TNVED_STATE = {
@@ -155,8 +160,13 @@ let tnvedState = loadTnvedState();
 
 const ROLE_TITLES = {
   owner: "Филькина Грамота а",
+  admin: "Админ",
   viewer: "Филькина Грамота",
 };
+
+function canManageAdmin(user) {
+  return user && (user.role === "owner" || user.role === "admin");
+}
 
 const rub = new Intl.NumberFormat("ru-RU", {
   style: "currency",
@@ -610,8 +620,19 @@ function formatPercent(value) {
 }
 
 function setStatus(message, isError = false) {
-  statusBox.textContent = message;
+  statusText.textContent = message;
   statusBox.classList.toggle("error", isError);
+}
+
+function visibleDashboardErrors(errors = []) {
+  return errors.filter((error) => {
+    const text = String(error || "").toLowerCase();
+    return !(
+      text.includes("/v2/finance/realization")
+      && text.includes("report")
+      && text.includes("not found")
+    );
+  });
 }
 
 async function api(path, options = {}) {
@@ -668,8 +689,8 @@ function updateUserChrome() {
     return;
   }
   userLine.textContent = `${currentUser.login} - ${ROLE_TITLES[currentUser.role] || currentUser.role}`;
-  adminTab.classList.toggle("hidden", currentUser.role !== "owner");
-  if (currentUser.role !== "owner" && !adminView.classList.contains("hidden")) {
+  adminTab.classList.toggle("hidden", !canManageAdmin(currentUser));
+  if (!canManageAdmin(currentUser) && !adminView.classList.contains("hidden")) {
     switchTab("dashboard");
   }
 }
@@ -695,7 +716,7 @@ async function switchAccount(clientId) {
 }
 
 function switchTab(tab) {
-  if (tab === "admin" && (!currentUser || currentUser.role !== "owner")) {
+  if (tab === "admin" && !canManageAdmin(currentUser)) {
     tab = "dashboard";
   }
   const isTnved = tab === "tnved";
@@ -724,8 +745,8 @@ async function showApp(user) {
   appView.classList.remove("hidden");
   loadAccounts().catch(() => setAccountHeader(null));
   updateUserChrome();
-  setStatus("Выберите период и нажмите “Показать”.");
-  if (user.role === "owner") {
+  setStatus("Выберите период и нажмите “Рассчитать”.");
+  if (canManageAdmin(user)) {
     loadAdmin();
   }
   switchTab(localStorage.getItem("ozonActiveTab") || "dashboard");
@@ -1534,12 +1555,14 @@ function render(data, compareData = null) {
   renderOperations(finance.all_operations || finance.by_type);
   renderProfitTables();
 
-  const warning = data.errors.length ? ` Есть предупреждения: ${data.errors.join(" | ")}` : "";
-  const compareWarning = compareData?.errors?.length ? ` Предупреждения сравнения: ${compareData.errors.join(" | ")}` : "";
+  const visibleErrors = visibleDashboardErrors(data.errors);
+  const visibleCompareErrors = visibleDashboardErrors(compareData?.errors);
+  const warning = visibleErrors.length ? ` Есть предупреждения: ${visibleErrors.join(" | ")}` : "";
+  const compareWarning = visibleCompareErrors.length ? ` Предупреждения сравнения: ${visibleCompareErrors.join(" | ")}` : "";
   const compareText = compareData ? ` Сравнение: ${comparisonPeriodLabel(compareData)}.` : "";
   setStatus(
     `Готово. Период: ${data.period.label || `${data.period.from} - ${data.period.to}`}.${compareText}${warning}${compareWarning}`,
-    Boolean(data.errors.length || compareData?.errors?.length)
+    Boolean(visibleErrors.length || visibleCompareErrors.length)
   );
 }
 
@@ -1825,9 +1848,133 @@ function renderTnvedCell(column, item) {
     return `<div class="articleCell"><strong>${escapeHtml(item.offer_id || "")}</strong><span>${escapeHtml(item.sku || "")}</span></div>`;
   }
   if (column.type === "number") {
+    if (column.key === "cost_price" && (item[column.key] === "" || item[column.key] === null || item[column.key] === undefined)) {
+      return "";
+    }
     return `<span class="numberCell">${formatPlainNumber(item[column.key])}</span>`;
   }
   return escapeHtml(item[column.key] || "");
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function downloadCostTemplate() {
+  if (!tnvedItems.length) {
+    alert("Сначала откройте вкладку «Товары» и загрузите товары Ozon.");
+    return;
+  }
+  const rows = [
+    ["Название товара", "Артикул", "SKU", "Категория", "Тип", "", "Себестоимость"],
+    ...tnvedItems.map((item) => [
+      item.name || "",
+      item.offer_id || "",
+      item.sku || "",
+      item.category || "",
+      item.type || "",
+      "",
+      item.cost_price || "",
+    ]),
+  ];
+  const csv = `\uFEFF${rows.map((row) => row.map(csvCell).join(";")).join("\r\n")}`;
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const link = document.createElement("a");
+  const clientId = currentAccount?.client_id || "ozon";
+  link.href = URL.createObjectURL(blob);
+  link.download = `cost_template_${clientId}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(link.href);
+}
+
+function detectCsvDelimiter(line) {
+  const delimiters = [";", "\t", ","];
+  return delimiters
+    .map((delimiter) => ({ delimiter, count: line.split(delimiter).length }))
+    .sort((a, b) => b.count - a.count)[0].delimiter;
+}
+
+function parseCsv(text) {
+  const normalized = text.replace(/^\uFEFF/, "").replaceAll("\r\n", "\n").replaceAll("\r", "\n");
+  const delimiter = detectCsvDelimiter(normalized.split("\n")[0] || ";");
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    const next = normalized[index + 1];
+    if (quoted) {
+      if (char === '"' && next === '"') {
+        cell += '"';
+        index += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+      continue;
+    }
+    if (char === '"') {
+      quoted = true;
+    } else if (char === delimiter) {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  if (row.some((value) => value.trim())) {
+    rows.push(row);
+  }
+  return rows;
+}
+
+function costRowsFromCsv(text) {
+  const rows = parseCsv(text);
+  return rows
+    .slice(1)
+    .map((row) => ({
+      sku: String(row[2] || "").trim(),
+      cost_price: String(row[6] || "").trim(),
+    }))
+    .filter((row) => row.sku && row.cost_price);
+}
+
+async function uploadCostTemplate(file) {
+  const rows = costRowsFromCsv(await file.text());
+  if (!rows.length) {
+    alert("В файле не найдено заполненных себестоимостей в столбце G.");
+    return;
+  }
+  uploadCostTemplateButton.disabled = true;
+  try {
+    const data = await api("/api/costs/upload", {
+      method: "POST",
+      body: JSON.stringify({ items: rows }),
+    });
+    const costsBySku = Object.fromEntries(rows.map((row) => [row.sku, row.cost_price]));
+    tnvedItems = tnvedItems.map((item) => {
+      const sku = String(item.sku || "").trim();
+      return sku && costsBySku[sku] ? { ...item, cost_price: costsBySku[sku] } : item;
+    });
+    renderTnved();
+    alert(`Себестоимость загружена. Сохранено строк: ${data.saved || rows.length}.`);
+  } catch (error) {
+    alert(error.message);
+  } finally {
+    uploadCostTemplateButton.disabled = false;
+    costTemplateFileInput.value = "";
+  }
 }
 
 function formatPlainNumber(value) {
@@ -2010,6 +2157,19 @@ summaryForm.addEventListener("submit", async (event) => {
     setStatus(error.message, true);
   } finally {
     button.disabled = false;
+  }
+});
+
+downloadCostTemplateButton.addEventListener("click", downloadCostTemplate);
+
+uploadCostTemplateButton.addEventListener("click", () => {
+  costTemplateFileInput.click();
+});
+
+costTemplateFileInput.addEventListener("change", () => {
+  const file = costTemplateFileInput.files?.[0];
+  if (file) {
+    uploadCostTemplate(file);
   }
 });
 
@@ -2198,6 +2358,20 @@ document.addEventListener("click", (event) => {
     closeFilterMenu();
   }
 });
+
+const backToTopButton = document.querySelector("#backToTopButton");
+if (backToTopButton) {
+  const updateBackToTopButton = () => {
+    backToTopButton.classList.toggle("visible", window.scrollY > 280);
+  };
+
+  backToTopButton.addEventListener("click", () => {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+
+  window.addEventListener("scroll", updateBackToTopButton, { passive: true });
+  updateBackToTopButton();
+}
 
 api("/api/me")
   .then((data) => {

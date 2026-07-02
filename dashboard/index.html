@@ -4,11 +4,12 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Ozon Dashboard</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <main class="shell">
-      <section id="loginView" class="panel login">
+      <section id="loginView" class="panel login hidden">
         <div>
           <h1>Ozon Dashboard</h1>
           <p>Войдите, чтобы открыть сводку и товары.</p>
@@ -29,8 +30,8 @@
       <section id="appView" class="hidden">
         <header class="appHeader">
           <div class="appBrand">
-            <strong>Ozon Dashboard</strong>
-            <span id="userLine" class="small"></span>
+            <span class="ozonLogo" aria-label="Ozon">OZON</span>
+            <span id="userLine" class="small hidden"></span>
           </div>
           <nav class="tabs" aria-label="Разделы">
             <button id="dashboardTab" class="tabButton active" type="button">Дашборд</button>
@@ -186,11 +187,18 @@
                   <input id="compareDateTo" name="compare_date_to" type="date" required />
                 </label>
               </div>
-              <button type="submit">Показать</button>
+              <button type="submit">Рассчитать</button>
             </form>
           </section>
 
-          <section id="status" class="status">Выберите период и нажмите “Показать”.</section>
+          <section id="status" class="status">
+            <span id="statusText">Выберите период и нажмите “Рассчитать”.</span>
+            <div class="costTemplateActions">
+              <button id="downloadCostTemplate" type="button">Скачать шаблон</button>
+              <button id="uploadCostTemplate" type="button">Загрузить шаблон</button>
+              <input id="costTemplateFile" class="hidden" type="file" accept=".csv,text/csv" />
+            </div>
+          </section>
 
           <section class="dailyOverview">
             <article class="reportBlock">
@@ -498,6 +506,11 @@
         </section>
       </section>
     </main>
+    <button id="backToTopButton" class="backToTopButton" type="button" aria-label="Наверх" title="Наверх">
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M12 5l7 7-1.4 1.4L13 8.8V20h-2V8.8l-4.6 4.6L5 12l7-7z" />
+      </svg>
+    </button>
     <script src="/app.js"></script>
   </body>
 </html>

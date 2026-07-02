@@ -543,6 +543,11 @@ def is_premium_plus_required_error(exc: Exception) -> bool:
     return "premium plus" in message or "premium_plus" in message
 
 
+def is_realization_report_not_found_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "/v2/finance/realization" in message and "report" in message and "not found" in message
+
+
 def money(value: Any) -> float:
     try:
         return float(value or 0)
@@ -1663,6 +1668,59 @@ def tnved_cache_file(client_id: str) -> Path:
     return CACHE_DIR / f"tnved_{safe_client_id}.json"
 
 
+def costs_file(client_id: str) -> Path:
+    safe_client_id = re.sub(r"[^0-9A-Za-z_.-]", "_", str(client_id).strip())
+    return CACHE_DIR / f"costs_{safe_client_id}.json"
+
+
+def load_costs(client_id: str) -> dict[str, str]:
+    path = costs_file(client_id)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(key).strip(): str(value).strip() for key, value in data.items() if str(key).strip()}
+
+
+def save_costs(client_id: str, costs: dict[str, Any]) -> int:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    def clean_cost(value: Any) -> str:
+        text = str(value).strip().replace(",", ".")
+        text = re.sub(r"[^0-9.\-]", "", text)
+        if text.count(".") > 1:
+            head, *tail = text.split(".")
+            text = f"{head}.{''.join(tail)}"
+        return text
+
+    cleaned = {
+        str(key).strip(): clean_cost(value)
+        for key, value in costs.items()
+        if str(key).strip() and clean_cost(value)
+    }
+    costs_file(client_id).write_text(json.dumps(cleaned, ensure_ascii=False, indent=2), encoding="utf-8")
+    return len(cleaned)
+
+
+def apply_costs_to_tnved_payload(payload: dict[str, Any], client_id: str) -> dict[str, Any]:
+    costs = load_costs(client_id)
+    if not costs:
+        return payload
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return payload
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sku = str(item.get("sku") or "").strip()
+        if sku in costs:
+            item["cost_price"] = costs[sku]
+    return payload
+
+
 def api_key_fingerprint(api_key: str) -> str:
     return hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:12]
 
@@ -1720,6 +1778,7 @@ def cache_payload(record: dict[str, Any], client_id: str, account_name: str, *, 
     now = datetime.now(timezone.utc)
     expires_at = parse_iso_datetime(record.get("expires_at"))
     payload = dict(record.get("payload") or {})
+    apply_costs_to_tnved_payload(payload, client_id)
     payload["next_update_at"] = expires_at.isoformat()
     payload["cache"] = {
         "client_id": client_id,
@@ -1836,7 +1895,7 @@ def build_summary(date_from: str, date_to: str, client_id: str | None = None, pe
             sales_breakdown = summarize_month_sales_breakdown(client, month_period[0], month_period[1])
             finance["sales_breakdown"] = sales_breakdown if sales_breakdown["total"] else fallback_sales_breakdown(finance)
         except Exception as exc:
-            if not is_premium_plus_required_error(exc):
+            if not is_premium_plus_required_error(exc) and not is_realization_report_not_found_error(exc):
                 errors.append(f"Детализация выручки за месяц: {exc}")
             finance["sales_breakdown"] = fallback_sales_breakdown(finance)
     elif realization_by_day_allowed(date_from, date_to):
@@ -1998,6 +2057,31 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     {"user": public, **accounts_payload(config, client_id, public)},
                     make_session(public["login"], public["role"], client_id),
                 )
+            except Exception as exc:
+                self.send_json(400, {"error": str(exc)})
+            return
+
+        if path == "/api/costs/upload":
+            user = self.require_user()
+            if not user:
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                rows = payload.get("items") or []
+                if not isinstance(rows, list):
+                    raise ValueError("Неверный формат файла себестоимости.")
+                config = load_config()
+                client_id = selected_client_id_for_user(user, config)
+                existing = load_costs(client_id)
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    sku = str(row.get("sku") or "").strip()
+                    cost = str(row.get("cost_price") or "").strip()
+                    if sku and cost:
+                        existing[sku] = cost
+                saved_count = save_costs(client_id, existing)
+                self.send_json(200, {"ok": True, "saved": saved_count})
             except Exception as exc:
                 self.send_json(400, {"error": str(exc)})
             return
@@ -2265,6 +2349,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             content_type = "text/css; charset=utf-8"
         elif target.suffix == ".js":
             content_type = "application/javascript; charset=utf-8"
+        elif target.suffix == ".svg":
+            content_type = "image/svg+xml"
 
         data = target.read_bytes()
         self.send_response(200)
