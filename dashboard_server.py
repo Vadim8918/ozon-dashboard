@@ -7,11 +7,14 @@ import os
 import secrets
 import sys
 import threading
+import io
+import zipfile
 from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+import xml.etree.ElementTree as ET
 
 import requests
 from dotenv import load_dotenv
@@ -566,6 +569,107 @@ def operation_service_total(operation: dict[str, Any]) -> float:
     return total
 
 
+SERVICE_BREAKDOWN_FIELDS = (
+    "service_logistics",
+    "service_delivery",
+    "service_processing",
+    "service_mainline",
+    "service_last_mile",
+    "service_other",
+)
+
+
+def empty_service_breakdown() -> dict[str, float]:
+    return {field: 0.0 for field in SERVICE_BREAKDOWN_FIELDS}
+
+
+def service_breakdown_key(service: dict[str, Any], operation: dict[str, Any]) -> str:
+    service_text = " ".join(
+        str(value or "")
+        for value in (
+            service.get("name"),
+            service.get("service_name"),
+            service.get("type"),
+        )
+    ).casefold()
+    operation_only_text = " ".join(
+        str(value or "")
+        for value in (
+            operation.get("operation_type_name"),
+            operation.get("operation_type"),
+            operation.get("type"),
+        )
+    ).casefold()
+    text = f"{service_text} {operation_only_text}".strip()
+    compact_text = re.sub(r"[^a-z0-9\u0430-\u044f\u0451]+", "", text)
+    compact_service_text = re.sub(r"[^a-z0-9\u0430-\u044f\u0451]+", "", service_text)
+
+    if "directflowlogistic" in compact_service_text:
+        return "service_mainline"
+    if "returnflowlogistic" in compact_service_text:
+        return "service_logistics"
+    if "redistributionlastmile" in compact_service_text or "lastmilecourier" in compact_service_text:
+        return "service_last_mile"
+    if "deliverytohandoverplaceozon" in compact_service_text:
+        return "service_delivery"
+    if "redistributiondropoffapvz" in compact_service_text or "dropoffpvz" in compact_service_text:
+        return "service_processing"
+    if "redistributionreturnspvz" in compact_service_text:
+        return "service_logistics"
+    if "sellerreturnscargoassortment" in compact_service_text:
+        return "service_processing"
+    if "productmovementfromwarehouse" in compact_service_text:
+        return "service_logistics"
+    if (
+        "itemagentservicestarsmembership" in compact_service_text
+        or "redistributionofacquiringoperation" in compact_service_text
+        or "temporarystorageredistribution" in compact_service_text
+        or "packageredistribution" in compact_service_text
+        or "packagematerialsprovision" in compact_service_text
+        or "disposaldetailed" in compact_service_text
+    ):
+        return "service_other"
+
+    if (
+        re.search(r"\u043f\u043e\u0441\u043b\u0435\u0434\u043d|\u043c\u0438\u043b|last.{0,5}mile|deliv.{0,12}customer|to.{0,5}customer", service_text)
+        or re.search(r"lastmile|delivtocustomer|tocustomer|redistributionlastmile", compact_service_text)
+    ):
+        return "service_last_mile"
+    if (
+        re.search(r"\u043c\u0430\u0433\u0438\u0441\u0442\u0440|direct.{0,12}flow|mainline|linehaul|trans", service_text)
+        or re.search(r"directflow|mainline|linehaul|trans", compact_service_text)
+    ):
+        return "service_mainline"
+    if re.search(r"\u0441\u043e\u0440\u0442\u0438\u0440|sorting|sortation", service_text):
+        return "service_other"
+    if (
+        re.search(r"\u043e\u0431\u0440\u0430\u0431|\u043f\u0440\u0438\u0435\u043c|\u043f\u0440\u0438\u0451\u043c|\u043e\u0442\u043f\u0440\u0430\u0432|\u0433\u0440\u0443\u0437\u043e\u043c\u0435\u0441\u0442|processing|process|fulfill|drop.{0,5}off|handover|pickup|pick.{0,5}up|pvz|sc|warehouse", service_text)
+        or re.search(r"processing|process|fulfill|fulfillment|dropoff|handover|pickup|pvz|warehouse|cargoassortment", compact_service_text)
+    ):
+        return "service_processing"
+    if re.search(r"\u0434\u043e\u0441\u0442\u0430\u0432|delivery|deliver|courier", service_text) or re.search(r"delivery|deliver|courier", compact_service_text):
+        return "service_delivery"
+    if (
+        re.search(r"\u043b\u043e\u0433\u0438\u0441\u0442|\u043f\u0435\u0440\u0435\u0432\u043e\u0437|return.{0,12}flow|flow|logistic|transport", service_text)
+        or re.search(r"returnflow|logistic|transport|movement", compact_service_text)
+    ):
+        return "service_logistics"
+    return "service_other"
+
+
+def operation_service_breakdown(operation: dict[str, Any]) -> dict[str, float]:
+    breakdown = empty_service_breakdown()
+    for service in operation.get("services") or []:
+        if not isinstance(service, dict):
+            continue
+        breakdown[service_breakdown_key(service, operation)] += abs(money(service.get("price")))
+    breakdown_total = sum(breakdown.values())
+    service_total = abs(operation_service_total(operation))
+    if service_total and breakdown_total < 0.01:
+        breakdown["service_other"] += service_total
+    return breakdown
+
+
 def operation_commission_amount(operation: dict[str, Any]) -> float:
     return money(operation.get("sale_commission"))
 
@@ -723,6 +827,125 @@ def summarize_month_sales_breakdown(client: OzonDashboardClient, year: int, mont
         "sales": round(sales, 2),
         "partner_programs": round(partner_programs, 2),
         "discount_points": round(discount_points, 2),
+    }
+
+
+def operation_month_key(operation: dict[str, Any], fallback: datetime) -> tuple[int, int]:
+    raw = str(operation.get("operation_date") or "").strip()
+    if raw:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S%z", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                parsed = datetime.strptime(raw.replace("Z", "+0000"), fmt)
+                return parsed.year, parsed.month
+            except ValueError:
+                continue
+    return fallback.year, fallback.month
+
+
+def build_realization_match_index(
+    client: OzonDashboardClient,
+    year: int,
+    month: int,
+) -> dict[tuple[str, float, int], list[dict[str, float]]]:
+    index: dict[tuple[str, float, int], list[dict[str, float]]] = {}
+
+    for row in client.finance_realization_month(year, month):
+        sku = clean_key((row.get("item") or {}).get("sku"))
+        if not sku:
+            continue
+        seller_price = round(money(row.get("seller_price_per_instance")), 2)
+
+        for key, sign in (("delivery_commission", 1), ("return_commission", -1)):
+            commission = row.get(key)
+            if not isinstance(commission, dict):
+                continue
+            quantity = money(commission.get("quantity")) or 1.0
+            if quantity <= 0:
+                quantity = 1.0
+            partner_programs = (
+                money(commission.get("bank_coinvestment"))
+                + money(commission.get("pick_up_point_coinvestment"))
+                + money(commission.get("stars"))
+                + money(commission.get("compensation"))
+            )
+            record = {
+                "sales_per_item": money(commission.get("amount")) / quantity,
+                "discount_points_per_item": money(commission.get("bonus")) / quantity,
+                "partner_programs_per_item": partner_programs / quantity,
+                "standard_fee_per_item": money(commission.get("standard_fee")) / quantity,
+                "left": max(round(quantity), 1),
+            }
+            index.setdefault((sku, seller_price, sign), []).append(record)
+
+    return index
+
+
+def summarize_matched_month_sales_breakdown(
+    client: OzonDashboardClient,
+    operations: list[dict[str, Any]],
+    date_from: str,
+) -> dict[str, float]:
+    fallback_month = parse_ozon_datetime(date_from)
+    indexes: dict[tuple[int, int], dict[tuple[str, float, int], list[dict[str, float]]]] = {}
+    sales = 0.0
+    partner_programs = 0.0
+    discount_points = 0.0
+    total = 0.0
+    matched_items = 0
+    unmatched_items = 0
+
+    def month_index(year: int, month: int) -> dict[tuple[str, float, int], list[dict[str, float]]]:
+        key = (year, month)
+        if key not in indexes:
+            indexes[key] = build_realization_match_index(client, year, month)
+        return indexes[key]
+
+    for operation in operations:
+        operation_total = money(operation.get("accruals_for_sale"))
+        if abs(operation_total) < 0.01:
+            continue
+        items = operation_items(operation) or [{}]
+        item_count = max(len(items), 1)
+        sign = 1 if operation_total >= 0 else -1
+        item_price = round(abs(operation_total) / item_count, 2)
+        item_standard_fee = round(abs(operation_commission_amount(operation)) / item_count, 2)
+        year, month = operation_month_key(operation, fallback_month)
+        index = month_index(year, month)
+
+        for item in items:
+            sku = clean_key(item.get("sku"))
+            candidates = [record for record in index.get((sku, item_price, sign), []) if record["left"] > 0]
+            matching_fee = [
+                record
+                for record in candidates
+                if abs(record["standard_fee_per_item"] - item_standard_fee) < 0.011
+            ]
+            if matching_fee:
+                candidates = matching_fee
+
+            if not candidates:
+                unmatched_items += 1
+                fallback_part = operation_total / item_count
+                sales += fallback_part
+                total += fallback_part
+                continue
+
+            record = candidates[0]
+            record["left"] -= 1
+            matched_items += 1
+            sales += sign * record["sales_per_item"]
+            partner_programs += sign * record["partner_programs_per_item"]
+            discount_points += sign * record["discount_points_per_item"]
+            total += sign * item_price
+
+    return {
+        "total": round(total, 2),
+        "sales": round(sales, 2),
+        "partner_programs": round(partner_programs, 2),
+        "discount_points": round(discount_points, 2),
+        "matched_items": matched_items,
+        "unmatched_items": unmatched_items,
+        "source": "month_realization_match",
     }
 
 
@@ -1008,6 +1231,8 @@ def product_category_indexes(products: list[dict[str, Any]]) -> tuple[dict[str, 
             "sku": clean_key(product.get("sku")),
             "product_id": clean_key(product.get("product_id")),
             "name": clean_key(product.get("name")),
+            "cost_price": clean_key(product.get("cost_price")),
+            "quantity": "",
         }
         sku = clean_key(product.get("sku"))
         offer_id = clean_key(product.get("offer_id"))
@@ -1065,7 +1290,9 @@ def operation_item_category(
 
     info = by_sku.get(sku) or by_offer_id.get(offer_id) or by_product_id.get(product_id)
     if info:
-        return info, sku or offer_id or product_id
+        item_info = dict(info)
+        item_info["quantity"] = clean_key(item.get("quantity") or item.get("qty") or item.get("items_count"))
+        return item_info, sku or offer_id or product_id
 
     category = clean_key(item.get("category")) or clean_key(item.get("category_name")) or "Без категории"
     return {
@@ -1075,7 +1302,33 @@ def operation_item_category(
         "sku": sku,
         "product_id": product_id,
         "name": clean_key(item.get("name") or item.get("product_name")),
+        "cost_price": clean_key(item.get("cost_price")),
+        "quantity": clean_key(item.get("quantity") or item.get("qty") or item.get("items_count")),
     }, sku or offer_id or product_id
+
+
+
+def parse_cost_price(value: Any) -> float:
+    text = str(value or "").strip().replace("\u00a0", " ").replace(" ", "").replace(",", ".")
+    if not text:
+        return 0.0
+    try:
+        return max(float(text), 0.0)
+    except ValueError:
+        cleaned = re.sub(r"[^0-9.]", "", text)
+        if not cleaned:
+            return 0.0
+        try:
+            return max(float(cleaned), 0.0)
+        except ValueError:
+            return 0.0
+
+
+def operation_item_buyout_cost(operation: dict[str, Any], item_info: dict[str, str]) -> float:
+    if not is_sale_operation(operation) or is_return_operation(operation):
+        return 0.0
+    quantity = abs(money(item_info.get("quantity"))) or 1.0
+    return parse_cost_price(item_info.get("cost_price")) * quantity
 
 
 def summarize_finance_by_category(operations: list[dict[str, Any]], products: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1093,10 +1346,13 @@ def summarize_finance_by_category(operations: list[dict[str, Any]], products: li
                 "revenue": 0.0,
                 "commission": 0.0,
                 "services": 0.0,
+                **empty_service_breakdown(),
                 "expenses": 0.0,
                 "returns": 0.0,
                 "paid_storage": 0.0,
                 "profit_before_cost": 0.0,
+                "buyout_cost": 0.0,
+                "net_profit": 0.0,
             },
         )
 
@@ -1113,11 +1369,13 @@ def summarize_finance_by_category(operations: list[dict[str, Any]], products: li
         revenue = money(operation.get("accruals_for_sale")) * weight
         commission = operation_commission_cost(operation) * weight
         services = abs(operation_service_total(operation)) * weight
+        service_breakdown = operation_service_breakdown(operation)
         expenses = abs(operation_amount(operation)) * weight if operation_amount(operation) < 0 else 0.0
         returns = abs(operation_amount(operation)) * weight if "возврат" in operation_text(operation) or "return" in operation_text(operation) else 0.0
         paid_storage = 0.0
 
         for category_info, item_key in categories:
+            buyout_cost = operation_item_buyout_cost(operation, category_info)
             category_name = category_info["category"] or "Без категории"
             row = get_category_row(category_name)
             if category_info.get("type"):
@@ -1128,10 +1386,14 @@ def summarize_finance_by_category(operations: list[dict[str, Any]], products: li
             row["revenue"] += revenue
             row["commission"] += commission
             row["services"] += services
+            for service_field, service_amount in service_breakdown.items():
+                row[service_field] += service_amount * weight
             row["expenses"] += expenses
             row["returns"] += returns
             row["paid_storage"] += paid_storage
             row["profit_before_cost"] += amount
+            row["buyout_cost"] += buyout_cost
+            row["net_profit"] += amount - buyout_cost
 
     storage_total = paid_storage_total(operations)
     weighted_products, total_fbo_stock = storage_weighted_products(products)
@@ -1148,6 +1410,7 @@ def summarize_finance_by_category(operations: list[dict[str, Any]], products: li
                 row["items"].add(item_key)
             row["paid_storage"] += storage_amount
             row["profit_before_cost"] -= storage_amount
+            row["net_profit"] -= storage_amount
 
     for product in products:
         category_name = clean_key(product.get("category")) or "Без категории"
@@ -1170,10 +1433,13 @@ def summarize_finance_by_category(operations: list[dict[str, Any]], products: li
                 "revenue": round(row["revenue"], 2),
                 "commission": round(row["commission"], 2),
                 "services": round(row["services"], 2),
+                **{field: round(row[field], 2) for field in SERVICE_BREAKDOWN_FIELDS},
                 "expenses": round(row["expenses"], 2),
                 "returns": round(row["returns"], 2),
                 "paid_storage": round(row["paid_storage"], 2),
                 "profit_before_cost": round(row["profit_before_cost"], 2),
+                "buyout_cost": round(row["buyout_cost"], 2),
+                "net_profit": round(row["net_profit"], 2),
             }
         )
 
@@ -1195,10 +1461,13 @@ def summarize_finance_by_type(operations: list[dict[str, Any]], products: list[d
                 "revenue": 0.0,
                 "commission": 0.0,
                 "services": 0.0,
+                **empty_service_breakdown(),
                 "expenses": 0.0,
                 "returns": 0.0,
                 "paid_storage": 0.0,
                 "profit_before_cost": 0.0,
+                "buyout_cost": 0.0,
+                "net_profit": 0.0,
             },
         )
 
@@ -1215,11 +1484,13 @@ def summarize_finance_by_type(operations: list[dict[str, Any]], products: list[d
         revenue = money(operation.get("accruals_for_sale")) * weight
         commission = operation_commission_cost(operation) * weight
         services = abs(operation_service_total(operation)) * weight
+        service_breakdown = operation_service_breakdown(operation)
         expenses = abs(operation_amount(operation)) * weight if operation_amount(operation) < 0 else 0.0
         returns = abs(operation_amount(operation)) * weight if "возврат" in operation_text(operation) or "return" in operation_text(operation) else 0.0
         paid_storage = 0.0
 
         for type_info, item_key in product_types:
+            buyout_cost = operation_item_buyout_cost(operation, type_info)
             type_name = type_info.get("type") or "Без типа"
             row = get_type_row(type_name)
             if type_info.get("category"):
@@ -1230,10 +1501,14 @@ def summarize_finance_by_type(operations: list[dict[str, Any]], products: list[d
             row["revenue"] += revenue
             row["commission"] += commission
             row["services"] += services
+            for service_field, service_amount in service_breakdown.items():
+                row[service_field] += service_amount * weight
             row["expenses"] += expenses
             row["returns"] += returns
             row["paid_storage"] += paid_storage
             row["profit_before_cost"] += amount
+            row["buyout_cost"] += buyout_cost
+            row["net_profit"] += amount - buyout_cost
 
     storage_total = paid_storage_total(operations)
     weighted_products, total_fbo_stock = storage_weighted_products(products)
@@ -1250,6 +1525,7 @@ def summarize_finance_by_type(operations: list[dict[str, Any]], products: list[d
                 row["items"].add(item_key)
             row["paid_storage"] += storage_amount
             row["profit_before_cost"] -= storage_amount
+            row["net_profit"] -= storage_amount
 
     for product in products:
         type_name = clean_key(product.get("type")) or "Без типа"
@@ -1272,10 +1548,13 @@ def summarize_finance_by_type(operations: list[dict[str, Any]], products: list[d
                 "revenue": round(row["revenue"], 2),
                 "commission": round(row["commission"], 2),
                 "services": round(row["services"], 2),
+                **{field: round(row[field], 2) for field in SERVICE_BREAKDOWN_FIELDS},
                 "expenses": round(row["expenses"], 2),
                 "returns": round(row["returns"], 2),
                 "paid_storage": round(row["paid_storage"], 2),
                 "profit_before_cost": round(row["profit_before_cost"], 2),
+                "buyout_cost": round(row["buyout_cost"], 2),
+                "net_profit": round(row["net_profit"], 2),
             }
         )
 
@@ -1299,11 +1578,13 @@ def summarize_finance_by_article(operations: list[dict[str, Any]], products: lis
         revenue = money(operation.get("accruals_for_sale")) * weight
         commission = operation_commission_cost(operation) * weight
         services = abs(operation_service_total(operation)) * weight
+        service_breakdown = operation_service_breakdown(operation)
         expenses = abs(operation_amount(operation)) * weight if operation_amount(operation) < 0 else 0.0
         returns = abs(operation_amount(operation)) * weight if "возврат" in operation_text(operation) or "return" in operation_text(operation) else 0.0
         paid_storage = 0.0
 
         for article_info, item_key in article_items:
+            buyout_cost = operation_item_buyout_cost(operation, article_info)
             article = article_info.get("offer_id") or article_info.get("sku") or item_key
             if not article:
                 continue
@@ -1321,10 +1602,13 @@ def summarize_finance_by_article(operations: list[dict[str, Any]], products: lis
                     "revenue": 0.0,
                     "commission": 0.0,
                     "services": 0.0,
+                    **empty_service_breakdown(),
                     "expenses": 0.0,
                     "returns": 0.0,
                     "paid_storage": 0.0,
                     "profit_before_cost": 0.0,
+                    "buyout_cost": 0.0,
+                    "net_profit": 0.0,
                 },
             )
             row["sku"] = row["sku"] or article_info.get("sku", "")
@@ -1336,10 +1620,14 @@ def summarize_finance_by_article(operations: list[dict[str, Any]], products: lis
             row["revenue"] += revenue
             row["commission"] += commission
             row["services"] += services
+            for service_field, service_amount in service_breakdown.items():
+                row[service_field] += service_amount * weight
             row["expenses"] += expenses
             row["returns"] += returns
             row["paid_storage"] += paid_storage
             row["profit_before_cost"] += amount
+            row["buyout_cost"] += buyout_cost
+            row["net_profit"] += amount - buyout_cost
 
     storage_total = paid_storage_total(operations)
     weighted_products, total_fbo_stock = storage_weighted_products(products)
@@ -1363,10 +1651,13 @@ def summarize_finance_by_article(operations: list[dict[str, Any]], products: lis
                     "revenue": 0.0,
                     "commission": 0.0,
                     "services": 0.0,
+                    **empty_service_breakdown(),
                     "expenses": 0.0,
                     "returns": 0.0,
                     "paid_storage": 0.0,
                     "profit_before_cost": 0.0,
+                    "buyout_cost": 0.0,
+                    "net_profit": 0.0,
                 },
             )
             row["sku"] = row["sku"] or clean_key(product.get("sku"))
@@ -1376,6 +1667,7 @@ def summarize_finance_by_article(operations: list[dict[str, Any]], products: lis
             row["items"].add(item_key)
             row["paid_storage"] += storage_amount
             row["profit_before_cost"] -= storage_amount
+            row["net_profit"] -= storage_amount
 
     result = []
     for row in rows.values():
@@ -1391,10 +1683,13 @@ def summarize_finance_by_article(operations: list[dict[str, Any]], products: lis
                 "revenue": round(row["revenue"], 2),
                 "commission": round(row["commission"], 2),
                 "services": round(row["services"], 2),
+                **{field: round(row[field], 2) for field in SERVICE_BREAKDOWN_FIELDS},
                 "expenses": round(row["expenses"], 2),
                 "returns": round(row["returns"], 2),
                 "paid_storage": round(row["paid_storage"], 2),
                 "profit_before_cost": round(row["profit_before_cost"], 2),
+                "buyout_cost": round(row["buyout_cost"], 2),
+                "net_profit": round(row["net_profit"], 2),
             }
         )
 
@@ -1705,6 +2000,83 @@ def save_costs(client_id: str, costs: dict[str, Any]) -> int:
     return len(cleaned)
 
 
+def normalize_cost_rows(rows: Any) -> list[dict[str, str]]:
+    if not isinstance(rows, list):
+        raise ValueError("Invalid cost file format.")
+    normalized: list[dict[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        sku = str(row.get("sku") or "").strip()
+        raw_cost_price = row.get("cost_price")
+        cost_price = "" if raw_cost_price is None else str(raw_cost_price).strip()
+        if sku and cost_price != "":
+            normalized.append({"sku": sku, "cost_price": cost_price})
+    return normalized
+
+
+def xlsx_column_index(cell_ref: str) -> int | None:
+    letters = re.match(r"([A-Z]+)", str(cell_ref).upper())
+    if not letters:
+        return None
+    index = 0
+    for char in letters.group(1):
+        index = index * 26 + (ord(char) - ord("A") + 1)
+    return index - 1
+
+
+def xlsx_cell_text(cell: ET.Element, shared_strings: list[str]) -> str:
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    cell_type = cell.attrib.get("t")
+    if cell_type == "inlineStr":
+        inline = cell.find(f"{namespace}is")
+        if inline is None:
+            return ""
+        return "".join(text.text or "" for text in inline.iter(f"{namespace}t")).strip()
+    value = cell.find(f"{namespace}v")
+    if value is None or value.text is None:
+        return ""
+    text = value.text.strip()
+    if cell_type == "s":
+        try:
+            return shared_strings[int(text)].strip()
+        except (ValueError, IndexError):
+            return ""
+    return text
+
+
+def cost_rows_from_xlsx_bytes(content: bytes) -> list[dict[str, str]]:
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            shared_root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            for item in shared_root.iter(f"{namespace}si"):
+                shared_strings.append("".join(text.text or "" for text in item.iter(f"{namespace}t")))
+        sheet_name = "xl/worksheets/sheet1.xml"
+        if sheet_name not in archive.namelist():
+            worksheet_names = [name for name in archive.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")]
+            if not worksheet_names:
+                raise ValueError("Excel worksheet was not found.")
+            sheet_name = sorted(worksheet_names)[0]
+        sheet_root = ET.fromstring(archive.read(sheet_name))
+    rows: list[dict[str, str]] = []
+    for row in sheet_root.iter(f"{namespace}row"):
+        row_number = int(row.attrib.get("r") or "0")
+        if row_number <= 1:
+            continue
+        values: dict[int, str] = {}
+        for cell in row.iter(f"{namespace}c"):
+            column = xlsx_column_index(cell.attrib.get("r", ""))
+            if column is not None:
+                values[column] = xlsx_cell_text(cell, shared_strings)
+        sku = values.get(2, "").strip()
+        cost_price = values.get(6, "").strip()
+        if sku and cost_price:
+            rows.append({"sku": sku, "cost_price": cost_price})
+    return rows
+
+
 def apply_costs_to_tnved_payload(payload: dict[str, Any], client_id: str) -> dict[str, Any]:
     costs = load_costs(client_id)
     if not costs:
@@ -1909,6 +2281,15 @@ def build_summary(date_from: str, date_to: str, client_id: str | None = None, pe
     else:
         finance["sales_breakdown"] = fallback_sales_breakdown(finance)
         notes.append("Детализация выручки недоступна за выбранный период, поэтому выручка показана общей суммой.")
+        try:
+            if notes:
+                notes.pop()
+            sales_breakdown = summarize_matched_month_sales_breakdown(client, operations, date_from)
+            finance["sales_breakdown"] = sales_breakdown if sales_breakdown["total"] else fallback_sales_breakdown(finance)
+        except Exception as exc:
+            if not is_premium_plus_required_error(exc) and not is_realization_report_not_found_error(exc):
+                errors.append(f"����������� ������� �� ��������� ����������: {exc}")
+            finance["sales_breakdown"] = fallback_sales_breakdown(finance)
     finance["by_category"] = summarize_finance_by_category(operations, category_products)
     finance["by_product_type"] = summarize_finance_by_type(operations, category_products)
     finance["by_article"] = summarize_finance_by_article(operations, category_products)
@@ -2068,8 +2449,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
                 rows = payload.get("items") or []
+                file_name = str(payload.get("file_name") or "").lower()
+                file_data = str(payload.get("file_data") or "").strip()
+                if file_data and file_name.endswith(".xlsx"):
+                    rows = cost_rows_from_xlsx_bytes(base64.b64decode(file_data))
                 if not isinstance(rows, list):
                     raise ValueError("Неверный формат файла себестоимости.")
+                rows = normalize_cost_rows(rows)
+                if not rows:
+                    raise ValueError("В файле не найдено заполненных себестоимостей в столбце G.")
                 config = load_config()
                 client_id = selected_client_id_for_user(user, config)
                 existing = load_costs(client_id)
@@ -2077,11 +2465,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if not isinstance(row, dict):
                         continue
                     sku = str(row.get("sku") or "").strip()
-                    cost = str(row.get("cost_price") or "").strip()
-                    if sku and cost:
+                    raw_cost = row.get("cost_price")
+                    cost = "" if raw_cost is None else str(raw_cost).strip()
+                    if sku and cost != "":
                         existing[sku] = cost
                 saved_count = save_costs(client_id, existing)
-                self.send_json(200, {"ok": True, "saved": saved_count})
+                self.send_json(200, {"ok": True, "saved": saved_count, "items": rows})
             except Exception as exc:
                 self.send_json(400, {"error": str(exc)})
             return

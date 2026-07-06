@@ -1,4 +1,4 @@
-const loginView = document.querySelector("#loginView");
+﻿const loginView = document.querySelector("#loginView");
 const appView = document.querySelector("#appView");
 const loginForm = document.querySelector("#loginForm");
 const summaryForm = document.querySelector("#summaryForm");
@@ -19,6 +19,10 @@ const compareDateToInput = document.querySelector("#compareDateTo");
 const downloadCostTemplateButton = document.querySelector("#downloadCostTemplate");
 const uploadCostTemplateButton = document.querySelector("#uploadCostTemplate");
 const costTemplateFileInput = document.querySelector("#costTemplateFile");
+const taxationModeMenu = document.querySelector("#taxationMode");
+const taxationModeButton = document.querySelector("#taxationModeButton");
+const taxationModeDropdown = document.querySelector("#taxationModeDropdown");
+let taxationModeInfo = document.querySelector("#taxationModeInfo");
 const logoutButton = document.querySelector("#logoutButton");
 const userLine = document.querySelector("#userLine");
 const accountButton = document.querySelector("#accountButton");
@@ -69,6 +73,7 @@ let periodCloseTimer = null;
 const TNVED_STATE_KEY = "ozonTnvedStateV4";
 const DAILY_CARD_STATE_KEY = "ozonDailyCardsHiddenV1";
 const DAILY_CARD_ORDER_KEY = "ozonDailyCardsOrderV1";
+const TAXATION_MODE_KEY = "ozonTaxationModeV1";
 
 const DAILY_CARD_OPTIONS = [
   { key: "orders", label: "Заказы", valueId: "orders" },
@@ -91,19 +96,287 @@ let hiddenDailyCards = loadHiddenDailyCards();
 let dailyCardOrder = loadDailyCardOrder();
 let draggedDailyCardKey = null;
 
+const TAXATION_MODE_LABELS = {
+  osno: "ОСНО",
+  usn_income_1: "УСН доходы 1%",
+  usn_income_2: "УСН доходы 2%",
+  usn_income_3: "УСН доходы 3%",
+  usn_income_4: "УСН доходы 4%",
+  usn_income_5: "УСН доходы 5%",
+  usn_income_6: "УСН доходы 6%",
+  usn_income_expense_5: "УСН доходы-расходы 5%",
+  usn_income_expense_6: "УСН доходы-расходы 6%",
+  usn_income_expense_7: "УСН доходы-расходы 7%",
+  usn_income_expense_8: "УСН доходы-расходы 8%",
+  usn_income_expense_9: "УСН доходы-расходы 9%",
+  usn_income_expense_10: "УСН доходы-расходы 10%",
+  usn_income_expense_11: "УСН доходы-расходы 11%",
+  usn_income_expense_12: "УСН доходы-расходы 12%",
+  usn_income_expense_13: "УСН доходы-расходы 13%",
+  usn_income_expense_14: "УСН доходы-расходы 14%",
+  usn_income_expense_15: "УСН доходы-расходы 15%",
+  ausn_income: "АУСН доходы 8%",
+  ausn_income_expense: "АУСН доходы-расходы 20%",
+  psn: "ПСН",
+  npd: "НПД",
+};
+
+const TAXATION_MODE_INFO = {
+  osno: {
+    title: "ОСНО",
+    body: "Общая система налогообложения. Обычно включает НДС, налог на прибыль для организаций или НДФЛ для ИП и учет расходов.",
+  },
+  usn_income: {
+    title: "УСН доходы",
+    body: "Упрощенная система: налог считается с доходов. Расходы и себестоимость обычно не уменьшают налоговую базу.",
+  },
+  usn_income_expense: {
+    title: "УСН доходы-расходы",
+    body: "Упрощенная система: налог считается с разницы между доходами и подтвержденными расходами.",
+  },
+  ausn_income: {
+    title: "АУСН доходы",
+    body: "Автоматизированная УСН: налог считается с доходов, часть отчетности и расчетов автоматизирована.",
+  },
+  ausn_income_expense: {
+    title: "АУСН доходы-расходы",
+    body: "Автоматизированная УСН: налог считается с доходов минус расходы, ставка выше, но база меньше.",
+  },
+  psn: {
+    title: "ПСН",
+    body: "Патентная система для ИП по отдельным видам деятельности. Налог обычно фиксирован стоимостью патента.",
+  },
+  npd: {
+    title: "НПД",
+    body: "Налог на профессиональный доход для самозанятых. Подходит только при соблюдении ограничений режима.",
+  },
+};
+
+function taxationInfoKey(value) {
+  if (!value) {
+    return "osno";
+  }
+  if (value.startsWith("usn_income_expense")) {
+    return "usn_income_expense";
+  }
+  if (value.startsWith("usn_income")) {
+    return "usn_income";
+  }
+  return TAXATION_MODE_INFO[value] ? value : "osno";
+}
+
+function selectedTaxationMode() {
+  return taxationModeButton?.dataset.taxationValue || localStorage.getItem(TAXATION_MODE_KEY) || "osno";
+}
+
+function taxationPercent(mode) {
+  const incomeRate = /^usn_income_(\d+)$/.exec(mode);
+  if (incomeRate) {
+    return Number(incomeRate[1]) / 100;
+  }
+  const incomeExpenseRate = /^usn_income_expense_(\d+)$/.exec(mode);
+  if (incomeExpenseRate) {
+    return Number(incomeExpenseRate[1]) / 100;
+  }
+  if (mode === "ausn_income") {
+    return 0.08;
+  }
+  if (mode === "ausn_income_expense") {
+    return 0.20;
+  }
+  if (mode === "npd") {
+    return 0.06;
+  }
+  return 0;
+}
+
+function taxationKind(mode) {
+  if (mode.startsWith("usn_income_expense") || mode === "ausn_income_expense") {
+    return "income_expense";
+  }
+  if (mode.startsWith("usn_income") || mode === "ausn_income" || mode === "npd") {
+    return "income";
+  }
+  return "manual";
+}
+
+function calculateTaxAmount({
+  salesRevenue,
+  partnerPrograms,
+  servicesTotal,
+  costsTotal,
+  buyoutCostTotal,
+}) {
+  const mode = selectedTaxationMode();
+  const rate = taxationPercent(mode);
+  const kind = taxationKind(mode);
+  const taxableIncome = Math.max(0, Number(salesRevenue || 0) + Number(partnerPrograms || 0));
+  const deductibleExpenses = Math.max(
+    0,
+    Number(servicesTotal || 0) + Number(costsTotal || 0) + Number(buyoutCostTotal || 0)
+  );
+
+  if (!rate || kind === "manual") {
+    return {
+      amount: 0,
+      mode,
+      taxableIncome,
+      deductibleExpenses,
+      base: 0,
+      calculated: false,
+    };
+  }
+
+  if (kind === "income") {
+    return {
+      amount: taxableIncome * rate,
+      mode,
+      taxableIncome,
+      deductibleExpenses,
+      base: taxableIncome,
+      calculated: true,
+    };
+  }
+
+  const base = Math.max(0, taxableIncome - deductibleExpenses);
+  const minimumRate = mode.startsWith("usn_income_expense") ? 0.01 : mode === "ausn_income_expense" ? 0.03 : 0;
+  const regularTax = base * rate;
+  const minimumTax = taxableIncome * minimumRate;
+  return {
+    amount: Math.max(regularTax, minimumTax),
+    mode,
+    taxableIncome,
+    deductibleExpenses,
+    base,
+    calculated: true,
+  };
+}
+
+function initTaxationModeSelect() {
+  if (!taxationModeMenu || !taxationModeButton || !taxationModeDropdown) {
+    return;
+  }
+  if (!taxationModeInfo) {
+    taxationModeInfo = document.createElement("aside");
+    taxationModeInfo.id = "taxationModeInfo";
+    taxationModeInfo.className = "taxationModeInfo";
+    taxationModeInfo.innerHTML = "<strong></strong><span></span>";
+    taxationModeDropdown.appendChild(taxationModeInfo);
+  }
+  const legacyModeMap = {
+    usn_income: "usn_income_6",
+    usn_income_expense: "usn_income_expense_15",
+  };
+  const savedMode = legacyModeMap[localStorage.getItem(TAXATION_MODE_KEY)] || localStorage.getItem(TAXATION_MODE_KEY);
+  const selectedMode = TAXATION_MODE_LABELS[savedMode] ? savedMode : "osno";
+
+  function setTaxationMode(mode) {
+    const label = TAXATION_MODE_LABELS[mode];
+    if (!label) {
+      return;
+    }
+    taxationModeButton.textContent = label;
+    taxationModeButton.dataset.taxationValue = mode;
+    localStorage.setItem(TAXATION_MODE_KEY, mode);
+    if (lastSummaryData) {
+      render(lastSummaryData, lastCompareData);
+    }
+  }
+
+  function setTaxationInfo(key, rateText = "") {
+    if (!taxationModeInfo) {
+      return;
+    }
+    const info = TAXATION_MODE_INFO[taxationInfoKey(key)] || TAXATION_MODE_INFO.osno;
+    taxationModeInfo.querySelector("strong").textContent = rateText ? `${info.title} ${rateText}` : info.title;
+    taxationModeInfo.querySelector("span").textContent = info.body;
+  }
+
+  function optionInfo(option) {
+    const value = option.dataset.taxationValue || option.dataset.taxationInfo || "";
+    if (value) {
+      const rate = option.dataset.taxationRate || (/^\d+%$/.test(option.textContent.trim()) ? option.textContent.trim() : "");
+      return { key: value, rate };
+    }
+    const firstSubmenuOption = option.parentElement?.querySelector(".taxationSubmenu [data-taxation-value]");
+    return {
+      key: firstSubmenuOption?.dataset.taxationValue || "osno",
+      rate: "",
+    };
+  }
+
+  setTaxationMode(selectedMode);
+  setTaxationInfo(selectedMode);
+
+  taxationModeButton.addEventListener("click", (event) => {
+    event.stopPropagation();
+    taxationModeDropdown.classList.toggle("hidden");
+  });
+
+  taxationModeDropdown.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-taxation-value]");
+    if (!option) {
+      return;
+    }
+    setTaxationMode(option.dataset.taxationValue);
+    taxationModeDropdown.classList.add("hidden");
+  });
+
+  taxationModeDropdown.addEventListener("mouseover", (event) => {
+    const option = event.target.closest("button");
+    if (!option || !taxationModeDropdown.contains(option)) {
+      return;
+    }
+    const info = optionInfo(option);
+    setTaxationInfo(info.key, info.rate);
+  });
+
+  taxationModeDropdown.addEventListener("focusin", (event) => {
+    const option = event.target.closest("button");
+    if (!option || !taxationModeDropdown.contains(option)) {
+      return;
+    }
+    const info = optionInfo(option);
+    setTaxationInfo(info.key, info.rate);
+  });
+
+  document.addEventListener("click", (event) => {
+    if (!taxationModeMenu.contains(event.target)) {
+      taxationModeDropdown.classList.add("hidden");
+    }
+  });
+}
+
 const profitTableState = {
-  category: { filter: "", sortKey: "profit_before_cost", sortDirection: "desc", showZero: false },
-  type: { filter: "", sortKey: "profit_before_cost", sortDirection: "desc", showZero: false },
-  article: { filter: "", sortKey: "profit_before_cost", sortDirection: "desc" },
+  category: { filter: "", sortKey: "net_profit", sortDirection: "desc", showZero: false },
+  type: { filter: "", sortKey: "net_profit", sortDirection: "desc", showZero: false },
+  article: { filter: "", sortKey: "net_profit", sortDirection: "desc" },
 };
 
 const PROFIT_ZERO_FIELDS = [
   "revenue",
   "commission",
   "services",
+  "service_logistics",
+  "service_delivery",
+  "service_processing",
+  "service_mainline",
+  "service_last_mile",
+  "service_other",
   "returns",
   "paid_storage",
   "profit_before_cost",
+  "buyout_cost",
+  "net_profit",
+];
+
+const SERVICE_PROFIT_FIELDS = [
+  "service_logistics",
+  "service_delivery",
+  "service_processing",
+  "service_mainline",
+  "service_last_mile",
+  "service_other",
 ];
 
 const PERIOD_LABELS = {
@@ -423,6 +696,10 @@ function initDailyCardsControl() {
     </nav>
   `;
   firstDailyCards.insertAdjacentElement("beforebegin", toolbar);
+  const costTemplateActions = document.querySelector(".costTemplateActions");
+  if (costTemplateActions) {
+    toolbar.appendChild(costTemplateActions);
+  }
 
   const button = toolbar.querySelector("#dailyCardsButton");
   const dropdown = toolbar.querySelector("#dailyCardsDropdown");
@@ -713,6 +990,9 @@ async function switchAccount(clientId) {
   if (!tnvedView.classList.contains("hidden")) {
     loadTnvedProducts();
   }
+  if (!adminView.classList.contains("hidden") && canManageAdmin(currentUser)) {
+    refreshAdminConfig().catch((error) => setStatus(error.message, true));
+  }
 }
 
 function switchTab(tab) {
@@ -736,6 +1016,9 @@ function switchTab(tab) {
   }
   if (isCache && !cacheLoadedOnce) {
     loadCacheStatus();
+  }
+  if (isAdmin && canManageAdmin(currentUser)) {
+    loadAdmin();
   }
 }
 
@@ -971,25 +1254,65 @@ function renderProfitTables() {
   renderArticleProfit(finance.by_article);
 }
 
+function emptyServiceProfitTotals() {
+  return SERVICE_PROFIT_FIELDS.reduce((totals, field) => {
+    totals[field] = 0;
+    return totals;
+  }, {});
+}
+
+function normalizeServiceProfitRow(item) {
+  const row = { ...item };
+  const sortingTotal = Math.abs(Number(row.service_sorting || 0));
+  if (sortingTotal >= 0.01) {
+    row.service_other = Number(row.service_other || 0) + sortingTotal;
+    row.service_sorting = 0;
+  }
+  const breakdownTotal = SERVICE_PROFIT_FIELDS.reduce((total, field) => total + Math.abs(Number(row[field] || 0)), 0);
+  const servicesTotal = Math.abs(Number(row.services || 0));
+  if (servicesTotal >= 0.01 && breakdownTotal < 0.01) {
+    row.service_other = servicesTotal;
+  }
+  return row;
+}
+
+function normalizeServiceProfitRows(items) {
+  return (items || []).map(normalizeServiceProfitRow);
+}
+
+function addServiceProfitTotals(totals, item) {
+  SERVICE_PROFIT_FIELDS.forEach((field) => {
+    totals[field] += Number(item[field] || 0);
+  });
+}
+
+function renderServiceProfitCells(item) {
+  return SERVICE_PROFIT_FIELDS
+    .map((field) => `<td>${formatMoney(-Math.abs(Number(item[field] || 0)))}</td>`)
+    .join("");
+}
+
 function renderCategoryProfit(items) {
   const tbody = document.querySelector("#categoryProfitRows");
   if (!tbody) {
     return;
   }
   tbody.innerHTML = "";
-  const rows = getProfitRows("category", items || [], [
+  const rows = getProfitRows("category", normalizeServiceProfitRows(items), [
     "category",
     "items_count",
     "revenue",
     "commission",
-    "services",
+    ...SERVICE_PROFIT_FIELDS,
     "returns",
     "paid_storage",
     "profit_before_cost",
+    "buyout_cost",
+    "net_profit",
   ]);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8">Нет данных по категориям за выбранный период.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15">Нет данных по категориям за выбранный период.</td></tr>';
     return;
   }
 
@@ -998,9 +1321,12 @@ function renderCategoryProfit(items) {
     revenue: 0,
     commission: 0,
     services: 0,
+    ...emptyServiceProfitTotals(),
     returns: 0,
     paid_storage: 0,
     profit_before_cost: 0,
+    buyout_cost: 0,
+    net_profit: 0,
   };
 
   rows.forEach((item) => {
@@ -1008,11 +1334,16 @@ function renderCategoryProfit(items) {
     totals.revenue += Number(item.revenue || 0);
     totals.commission += Number(item.commission || 0);
     totals.services += Number(item.services || 0);
+    addServiceProfitTotals(totals, item);
     totals.returns += Number(item.returns || 0);
     totals.paid_storage += Number(item.paid_storage || 0);
     totals.profit_before_cost += Number(item.profit_before_cost || 0);
+    totals.buyout_cost += Number(item.buyout_cost || 0);
+    totals.net_profit += Number(item.profit_before_cost || 0) - Number(item.buyout_cost || 0);
 
     const profit = Number(item.profit_before_cost || 0);
+    const buyoutCost = Number(item.buyout_cost || 0);
+    const netProfit = profit - buyoutCost;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>
@@ -1022,10 +1353,12 @@ function renderCategoryProfit(items) {
       <td>${formatNumber(item.items_count || 0)}</td>
       <td>${formatMoney(item.revenue)}</td>
       <td>${formatMoney(-Number(item.commission || 0))}</td>
-      <td>${formatMoney(-Math.abs(Number(item.services || 0)))}</td>
+      ${renderServiceProfitCells(item)}
       <td>${formatMoney(-Math.abs(Number(item.returns || 0)))}</td>
       <td>${formatMoney(-Math.abs(Number(item.paid_storage || 0)))}</td>
       <td class="${profit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(profit)}</td>
+      <td>${formatMoney(-Math.abs(buyoutCost))}</td>
+      <td class="${netProfit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(netProfit)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -1037,10 +1370,12 @@ function renderCategoryProfit(items) {
     <td>${formatNumber(totals.items_count)}</td>
     <td>${formatMoney(totals.revenue)}</td>
     <td>${formatMoney(-totals.commission)}</td>
-    <td>${formatMoney(-Math.abs(totals.services))}</td>
+    ${renderServiceProfitCells(totals)}
     <td>${formatMoney(-Math.abs(totals.returns))}</td>
     <td>${formatMoney(-Math.abs(totals.paid_storage))}</td>
     <td class="${totals.profit_before_cost < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(totals.profit_before_cost)}</td>
+    <td>${formatMoney(-Math.abs(totals.buyout_cost))}</td>
+    <td class="${totals.net_profit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(totals.net_profit)}</td>
   `;
   tbody.appendChild(totalRow);
 }
@@ -1051,19 +1386,21 @@ function renderTypeProfit(items) {
     return;
   }
   tbody.innerHTML = "";
-  const rows = getProfitRows("type", items || [], [
+  const rows = getProfitRows("type", normalizeServiceProfitRows(items), [
     "type",
     "items_count",
     "revenue",
     "commission",
-    "services",
+    ...SERVICE_PROFIT_FIELDS,
     "returns",
     "paid_storage",
     "profit_before_cost",
+    "buyout_cost",
+    "net_profit",
   ]);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8">Нет данных по типам за выбранный период.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15">Нет данных по типам за выбранный период.</td></tr>';
     return;
   }
 
@@ -1072,9 +1409,12 @@ function renderTypeProfit(items) {
     revenue: 0,
     commission: 0,
     services: 0,
+    ...emptyServiceProfitTotals(),
     returns: 0,
     paid_storage: 0,
     profit_before_cost: 0,
+    buyout_cost: 0,
+    net_profit: 0,
   };
 
   rows.forEach((item) => {
@@ -1082,11 +1422,16 @@ function renderTypeProfit(items) {
     totals.revenue += Number(item.revenue || 0);
     totals.commission += Number(item.commission || 0);
     totals.services += Number(item.services || 0);
+    addServiceProfitTotals(totals, item);
     totals.returns += Number(item.returns || 0);
     totals.paid_storage += Number(item.paid_storage || 0);
     totals.profit_before_cost += Number(item.profit_before_cost || 0);
+    totals.buyout_cost += Number(item.buyout_cost || 0);
+    totals.net_profit += Number(item.profit_before_cost || 0) - Number(item.buyout_cost || 0);
 
     const profit = Number(item.profit_before_cost || 0);
+    const buyoutCost = Number(item.buyout_cost || 0);
+    const netProfit = profit - buyoutCost;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>
@@ -1095,10 +1440,12 @@ function renderTypeProfit(items) {
       <td>${formatNumber(item.items_count || 0)}</td>
       <td>${formatMoney(item.revenue)}</td>
       <td>${formatMoney(-Number(item.commission || 0))}</td>
-      <td>${formatMoney(-Math.abs(Number(item.services || 0)))}</td>
+      ${renderServiceProfitCells(item)}
       <td>${formatMoney(-Math.abs(Number(item.returns || 0)))}</td>
       <td>${formatMoney(-Math.abs(Number(item.paid_storage || 0)))}</td>
       <td class="${profit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(profit)}</td>
+      <td>${formatMoney(-Math.abs(buyoutCost))}</td>
+      <td class="${netProfit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(netProfit)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -1110,10 +1457,12 @@ function renderTypeProfit(items) {
     <td>${formatNumber(totals.items_count)}</td>
     <td>${formatMoney(totals.revenue)}</td>
     <td>${formatMoney(-totals.commission)}</td>
-    <td>${formatMoney(-Math.abs(totals.services))}</td>
+    ${renderServiceProfitCells(totals)}
     <td>${formatMoney(-Math.abs(totals.returns))}</td>
     <td>${formatMoney(-Math.abs(totals.paid_storage))}</td>
     <td class="${totals.profit_before_cost < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(totals.profit_before_cost)}</td>
+    <td>${formatMoney(-Math.abs(totals.buyout_cost))}</td>
+    <td class="${totals.net_profit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(totals.net_profit)}</td>
   `;
   tbody.appendChild(totalRow);
 }
@@ -1124,7 +1473,7 @@ function renderArticleProfit(items) {
     return;
   }
   tbody.innerHTML = "";
-  const rows = getProfitRows("article", items || [], [
+  const rows = getProfitRows("article", normalizeServiceProfitRows(items), [
     "article",
     "sku",
     "name",
@@ -1132,14 +1481,16 @@ function renderArticleProfit(items) {
     "type",
     "revenue",
     "commission",
-    "services",
+    ...SERVICE_PROFIT_FIELDS,
     "returns",
     "paid_storage",
     "profit_before_cost",
+    "buyout_cost",
+    "net_profit",
   ]);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="10">Нет данных по артикулам за выбранный период.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="17">Нет данных по артикулам за выбранный период.</td></tr>';
     return;
   }
 
@@ -1147,20 +1498,28 @@ function renderArticleProfit(items) {
     revenue: 0,
     commission: 0,
     services: 0,
+    ...emptyServiceProfitTotals(),
     returns: 0,
     paid_storage: 0,
     profit_before_cost: 0,
+    buyout_cost: 0,
+    net_profit: 0,
   };
 
   rows.forEach((item) => {
     totals.revenue += Number(item.revenue || 0);
     totals.commission += Number(item.commission || 0);
     totals.services += Number(item.services || 0);
+    addServiceProfitTotals(totals, item);
     totals.returns += Number(item.returns || 0);
     totals.paid_storage += Number(item.paid_storage || 0);
     totals.profit_before_cost += Number(item.profit_before_cost || 0);
+    totals.buyout_cost += Number(item.buyout_cost || 0);
+    totals.net_profit += Number(item.profit_before_cost || 0) - Number(item.buyout_cost || 0);
 
     const profit = Number(item.profit_before_cost || 0);
+    const buyoutCost = Number(item.buyout_cost || 0);
+    const netProfit = profit - buyoutCost;
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td>
@@ -1172,10 +1531,12 @@ function renderArticleProfit(items) {
       <td>${escapeHtml(item.type || "Без типа")}</td>
       <td>${formatMoney(item.revenue)}</td>
       <td>${formatMoney(-Number(item.commission || 0))}</td>
-      <td>${formatMoney(-Math.abs(Number(item.services || 0)))}</td>
+      ${renderServiceProfitCells(item)}
       <td>${formatMoney(-Math.abs(Number(item.returns || 0)))}</td>
       <td>${formatMoney(-Math.abs(Number(item.paid_storage || 0)))}</td>
       <td class="${profit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(profit)}</td>
+      <td>${formatMoney(-Math.abs(buyoutCost))}</td>
+      <td class="${netProfit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(netProfit)}</td>
     `;
     tbody.appendChild(tr);
   });
@@ -1189,10 +1550,12 @@ function renderArticleProfit(items) {
     <td></td>
     <td>${formatMoney(totals.revenue)}</td>
     <td>${formatMoney(-totals.commission)}</td>
-    <td>${formatMoney(-Math.abs(totals.services))}</td>
+    ${renderServiceProfitCells(totals)}
     <td>${formatMoney(-Math.abs(totals.returns))}</td>
     <td>${formatMoney(-Math.abs(totals.paid_storage))}</td>
     <td class="${totals.profit_before_cost < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(totals.profit_before_cost)}</td>
+    <td>${formatMoney(-Math.abs(totals.buyout_cost))}</td>
+    <td class="${totals.net_profit < 0 ? "negativeMoney" : "positiveMoney"}">${formatMoney(totals.net_profit)}</td>
   `;
   tbody.appendChild(totalRow);
 }
@@ -1221,20 +1584,41 @@ function renderUsers(users) {
   });
 }
 
+function applyAdminConfig(data) {
+  document.querySelector("#adminAccountName").value = data.name || "";
+  document.querySelector("#adminClientId").value = data.client_id || "";
+  const adminAccountLabel = [
+    data.name || "",
+    data.client_id ? `ID ${data.client_id}` : "",
+  ].filter(Boolean).join(" · ");
+  document.querySelector("#adminAccountNameHint").textContent = data.name
+    ? data.name
+    : "Название не настроено";
+  document.querySelector("#adminClientIdHint").textContent = data.client_id
+    ? `Client ID ${data.client_id}`
+    : "Client ID не настроен";
+  document.querySelector("#adminApiKey").placeholder = data.api_key_mask && adminAccountLabel
+    ? `ключ ${data.api_key_mask}`
+    : data.api_key_mask
+    ? `Сейчас сохранен ключ ${data.api_key_mask}`
+    : "API Key не настроен";
+  document.querySelector("#performanceClientId").placeholder = data.performance_client_id_mask || "Client ID не настроен";
+  document.querySelector("#performanceClientSecret").placeholder = data.performance_client_secret_mask || "Client Secret не настроен";
+}
+
+async function refreshAdminConfig() {
+  const data = await api("/api/admin/config");
+  applyAdminConfig(data);
+  return data;
+}
+
 async function loadAdmin() {
   setStatus(comparisonHidden()
     ? "Загружаю основной период из Ozon..."
     : "Загружаю основной период и сравнение из Ozon...");
   try {
     setStatus("Загружаю настройки админ панели...");
-    const data = await api("/api/admin/config");
-    document.querySelector("#adminAccountName").value = data.name || "";
-    document.querySelector("#adminClientId").value = data.client_id || "";
-    document.querySelector("#adminApiKey").placeholder = data.api_key_mask
-      ? `Сейчас сохранен ключ ${data.api_key_mask}`
-      : "API Key не настроен";
-    document.querySelector("#performanceClientId").placeholder = data.performance_client_id_mask || "Client ID не настроен";
-    document.querySelector("#performanceClientSecret").placeholder = data.performance_client_secret_mask || "Client Secret не настроен";
+    const data = await refreshAdminConfig();
     renderUsers(data.users || []);
     await loadAccounts();
   } catch (error) {
@@ -1282,14 +1666,32 @@ function summaryMetrics(data) {
       : []),
   ];
   const expenses = Number(finance.expenses || 0);
-  const costsTotal = paidStorage + extraCostsTotal;
+  const buyoutCostTotal = (finance.by_article || []).reduce((total, item) => total + Number(item.buyout_cost || 0), 0);
   const servicesTotal = commission + services + ads;
+  const costsTotal = paidStorage + extraCostsTotal;
+  const tax = calculateTaxAmount({
+    salesRevenue,
+    partnerPrograms,
+    servicesTotal,
+    costsTotal,
+    buyoutCostTotal,
+  });
+  const taxAmount = tax.calculated ? tax.amount : 0;
+  const visibleCostItemsWithTax = [
+    ...visibleCostItems,
+    ...(taxAmount >= 0.01 ? [{ name: "Налог по режиму", amount: taxAmount, className: "blue" }] : []),
+  ];
+  const costsTotalWithTax = costsTotal + taxAmount;
   const profit = salesTotal - servicesTotal - costsTotal;
   const profitBase = servicesTotal + costsTotal;
   const otherServices = Math.max(0, expenses - servicesTotal - returns);
   const margin = salesTotal ? (profit / salesTotal) * 100 : 0;
   const roi = profitBase ? (profit / profitBase) * 100 : 0;
   const drr = salesTotal ? (ads / salesTotal) * 100 : 0;
+  const netProfit = profit - buyoutCostTotal - taxAmount;
+  const netProfitBase = profitBase + buyoutCostTotal + taxAmount;
+  const netMargin = salesTotal ? (netProfit / salesTotal) * 100 : 0;
+  const netRoi = netProfitBase ? (netProfit / netProfitBase) * 100 : 0;
 
   return {
     finance,
@@ -1303,14 +1705,21 @@ function summaryMetrics(data) {
     ads,
     returns,
     paidStorage,
-    visibleCostItems,
+    visibleCostItems: visibleCostItemsWithTax,
     costsTotal,
+    costsTotalWithTax,
     servicesTotal,
     otherServices,
+    buyoutCostTotal,
+    tax,
+    taxAmount,
     profit,
     margin,
     roi,
     drr,
+    netProfit,
+    netMargin,
+    netRoi,
     ordersCount: Number(orders.orders_count || 0),
     fboOrdered: Number(orders.fbo_ordered || 0),
     fboDelivered: Number(orders.fbo_delivered || 0),
@@ -1339,6 +1748,21 @@ function renderCostsList(items) {
     `;
     costsList.appendChild(row);
   });
+}
+
+function ensureNetProfitTaxRow() {
+  const rows = document.querySelector(".netProfitBlock .profitRows");
+  if (!rows) {
+    return null;
+  }
+  let value = document.querySelector("#netProfitTax");
+  if (value) {
+    return value;
+  }
+  const row = document.createElement("div");
+  row.innerHTML = "<span>Налог</span><strong id=\"netProfitTax\">-</strong>";
+  rows.insertAdjacentElement("afterbegin", row);
+  return row.querySelector("#netProfitTax");
 }
 
 const DAILY_COMPARISON_METRICS = [
@@ -1470,20 +1894,31 @@ function render(data, compareData = null) {
     paidStorage,
     visibleCostItems,
     costsTotal,
+    costsTotalWithTax,
     servicesTotal,
     otherServices,
+    buyoutCostTotal,
+    taxAmount,
     profit,
     margin,
     roi,
     drr,
+    netProfit,
+    netMargin,
+    netRoi,
   } = summaryMetrics(data);
 
   setText("revenue", formatMoney(salesTotal));
   setText("orders", formatNumber(orders.orders_count));
-  setText("expenses", formatMoney(costsTotal));
+  setText("expenses", formatMoney(costsTotalWithTax));
   setText("ads", formatMoney(ads));
   setText("commission", formatMoney(commission));
   setText("profit", formatMoney(profit));
+  setOptionalText("netProfit", formatMoney(netProfit));
+  const netProfitTaxElement = ensureNetProfitTaxRow();
+  if (netProfitTaxElement) {
+    netProfitTaxElement.textContent = taxAmount >= 0.01 ? formatMoney(taxAmount) : "-";
+  }
 
   setOptionalText("fboOrders", formatNumber(orders.fbo_orders));
   setOptionalText("fbsOrders", formatNumber(orders.fbs_orders));
@@ -1504,6 +1939,9 @@ function render(data, compareData = null) {
   setOptionalText("profitMargin", formatPercent(margin));
   setOptionalText("profitRoi", formatPercent(roi));
   setOptionalText("profitDrr", formatPercent(drr));
+  setOptionalText("netProfitMargin", formatPercent(netMargin));
+  setOptionalText("netProfitRoi", formatPercent(netRoi));
+  setOptionalText("netProfitDrr", formatPercent(drr));
   setOptionalText("salesCardAmount", formatMoney(salesTotal));
   setOptionalText("logisticsCardAmount", formatMoney(services));
   setOptionalText("allServicesCardAmount", formatMoney(servicesTotal));
@@ -1546,7 +1984,9 @@ function render(data, compareData = null) {
       { name: "Услуги и доставка", amount: -services },
       { name: "Реклама", amount: -ads },
       ...visibleCostItems.map((item) => ({ name: item.name, amount: -Number(item.amount || 0) })),
+      { name: "Себестоимость выкупленных", amount: -buyoutCostTotal },
       { name: "Итого до себестоимости", amount: profit },
+      { name: "Чистая прибыль", amount: netProfit },
     ]);
   }
   if (document.querySelector("#statusBars")) {
@@ -1861,6 +2301,148 @@ function csvCell(value) {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
+const XLSX_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+function xmlEscape(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&apos;");
+}
+
+function columnName(index) {
+  let numberValue = index + 1;
+  let name = "";
+  while (numberValue > 0) {
+    const remainder = (numberValue - 1) % 26;
+    name = String.fromCharCode(65 + remainder) + name;
+    numberValue = Math.floor((numberValue - 1) / 26);
+  }
+  return name;
+}
+
+function sheetXml(rows) {
+  const sheetRows = rows
+    .map((row, rowIndex) => {
+      const cells = row
+        .map((value, columnIndex) => {
+          const ref = `${columnName(columnIndex)}${rowIndex + 1}`;
+          return `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(value)}</t></is></c>`;
+        })
+        .join("");
+      return `<row r="${rowIndex + 1}">${cells}</row>`;
+    })
+    .join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${sheetRows}</sheetData></worksheet>`;
+}
+
+function crc32(bytes) {
+  let crc = -1;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+    }
+  }
+  return (crc ^ -1) >>> 0;
+}
+
+function writeUint16(buffer, offset, value) {
+  buffer[offset] = value & 0xff;
+  buffer[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeUint32(buffer, offset, value) {
+  buffer[offset] = value & 0xff;
+  buffer[offset + 1] = (value >>> 8) & 0xff;
+  buffer[offset + 2] = (value >>> 16) & 0xff;
+  buffer[offset + 3] = (value >>> 24) & 0xff;
+}
+
+function zipDateTime(dateValue = new Date()) {
+  return {
+    dosTime: (dateValue.getHours() << 11) | (dateValue.getMinutes() << 5) | Math.floor(dateValue.getSeconds() / 2),
+    dosDate: ((dateValue.getFullYear() - 1980) << 9) | ((dateValue.getMonth() + 1) << 5) | dateValue.getDate(),
+  };
+}
+
+function createZip(files) {
+  const encoder = new TextEncoder();
+  const chunks = [];
+  const central = [];
+  let offset = 0;
+  const { dosTime, dosDate } = zipDateTime();
+
+  files.forEach((file) => {
+    const nameBytes = encoder.encode(file.name);
+    const contentBytes = encoder.encode(file.content);
+    const checksum = crc32(contentBytes);
+    const localHeader = new Uint8Array(30 + nameBytes.length);
+    writeUint32(localHeader, 0, 0x04034b50);
+    writeUint16(localHeader, 4, 20);
+    writeUint16(localHeader, 6, 0x0800);
+    writeUint16(localHeader, 8, 0);
+    writeUint16(localHeader, 10, dosTime);
+    writeUint16(localHeader, 12, dosDate);
+    writeUint32(localHeader, 14, checksum);
+    writeUint32(localHeader, 18, contentBytes.length);
+    writeUint32(localHeader, 22, contentBytes.length);
+    writeUint16(localHeader, 26, nameBytes.length);
+    localHeader.set(nameBytes, 30);
+    chunks.push(localHeader, contentBytes);
+
+    const centralHeader = new Uint8Array(46 + nameBytes.length);
+    writeUint32(centralHeader, 0, 0x02014b50);
+    writeUint16(centralHeader, 4, 20);
+    writeUint16(centralHeader, 6, 20);
+    writeUint16(centralHeader, 8, 0x0800);
+    writeUint16(centralHeader, 10, 0);
+    writeUint16(centralHeader, 12, dosTime);
+    writeUint16(centralHeader, 14, dosDate);
+    writeUint32(centralHeader, 16, checksum);
+    writeUint32(centralHeader, 20, contentBytes.length);
+    writeUint32(centralHeader, 24, contentBytes.length);
+    writeUint16(centralHeader, 28, nameBytes.length);
+    writeUint32(centralHeader, 42, offset);
+    centralHeader.set(nameBytes, 46);
+    central.push(centralHeader);
+    offset += localHeader.length + contentBytes.length;
+  });
+
+  const centralSize = central.reduce((sum, chunk) => sum + chunk.length, 0);
+  const end = new Uint8Array(22);
+  writeUint32(end, 0, 0x06054b50);
+  writeUint16(end, 8, files.length);
+  writeUint16(end, 10, files.length);
+  writeUint32(end, 12, centralSize);
+  writeUint32(end, 16, offset);
+  return new Blob([...chunks, ...central, end], { type: XLSX_CONTENT_TYPE });
+}
+
+function createXlsxBlob(rows) {
+  return createZip([
+    {
+      name: "[Content_Types].xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/></Types>`,
+    },
+    {
+      name: "_rels/.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+    },
+    {
+      name: "xl/workbook.xml",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Себестоимость" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+    },
+    {
+      name: "xl/_rels/workbook.xml.rels",
+      content: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>`,
+    },
+    { name: "xl/worksheets/sheet1.xml", content: sheetXml(rows) },
+  ]);
+}
+
 function downloadCostTemplate() {
   if (!tnvedItems.length) {
     alert("Сначала откройте вкладку «Товары» и загрузите товары Ozon.");
@@ -1875,15 +2457,14 @@ function downloadCostTemplate() {
       item.category || "",
       item.type || "",
       "",
-      item.cost_price || "",
+      item.cost_price ?? "",
     ]),
   ];
-  const csv = `\uFEFF${rows.map((row) => row.map(csvCell).join(";")).join("\r\n")}`;
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const blob = createXlsxBlob(rows);
   const link = document.createElement("a");
   const clientId = currentAccount?.client_id || "ozon";
   link.href = URL.createObjectURL(blob);
-  link.download = `cost_template_${clientId}.csv`;
+  link.download = `cost_template_${clientId}.xlsx`;
   document.body.appendChild(link);
   link.click();
   link.remove();
@@ -1945,30 +2526,56 @@ function costRowsFromCsv(text) {
     .slice(1)
     .map((row) => ({
       sku: String(row[2] || "").trim(),
-      cost_price: String(row[6] || "").trim(),
+      cost_price: String(row[6] ?? "").trim(),
     }))
-    .filter((row) => row.sku && row.cost_price);
+    .filter((row) => row.sku && row.cost_price !== "");
 }
 
 async function uploadCostTemplate(file) {
-  const rows = costRowsFromCsv(await file.text());
-  if (!rows.length) {
+  const isCsv = file.name.toLowerCase().endsWith(".csv") || file.type.includes("csv");
+  const rows = isCsv ? costRowsFromCsv(await file.text()) : [];
+  if (!rows.length && isCsv) {
     alert("В файле не найдено заполненных себестоимостей в столбце G.");
     return;
+  }
+  if (!isCsv && !file.name.toLowerCase().endsWith(".xlsx")) {
+    alert("Загрузите файл шаблона в формате Excel .xlsx.");
+    return;
+  }
+  let fileData = "";
+  if (!isCsv) {
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    bytes.forEach((byte) => {
+      binary += String.fromCharCode(byte);
+    });
+    fileData = btoa(binary);
   }
   uploadCostTemplateButton.disabled = true;
   try {
     const data = await api("/api/costs/upload", {
       method: "POST",
-      body: JSON.stringify({ items: rows }),
+      body: JSON.stringify({ items: rows, file_name: file.name, file_data: fileData }),
     });
-    const costsBySku = Object.fromEntries(rows.map((row) => [row.sku, row.cost_price]));
+    const uploadedRows = Array.isArray(data.items) && data.items.length ? data.items : rows;
+    if (!uploadedRows.length) {
+      throw new Error("В файле не найдено заполненных себестоимостей в столбце G.");
+    }
+    const costsBySku = Object.fromEntries(
+      uploadedRows.map((row) => [String(row.sku || "").trim(), String(row.cost_price ?? "").trim()])
+    );
+    let appliedCount = 0;
     tnvedItems = tnvedItems.map((item) => {
       const sku = String(item.sku || "").trim();
-      return sku && costsBySku[sku] ? { ...item, cost_price: costsBySku[sku] } : item;
+      if (sku && Object.prototype.hasOwnProperty.call(costsBySku, sku)) {
+        appliedCount += 1;
+        return { ...item, cost_price: costsBySku[sku] };
+      }
+      return item;
     });
     renderTnved();
-    alert(`Себестоимость загружена. Сохранено строк: ${data.saved || rows.length}.`);
+    alert(`Себестоимость загружена. Сохранено строк: ${uploadedRows.length}. Проставлено в товарах: ${appliedCount}.`);
   } catch (error) {
     alert(error.message);
   } finally {
@@ -2138,6 +2745,7 @@ hideComparisonInput?.addEventListener("change", () => {
 });
 syncComparisonVisibility();
 initDailyCardsControl();
+initTaxationModeSelect();
 
 summaryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2382,3 +2990,5 @@ api("/api/me")
     }
   })
   .catch(showLogin);
+
+

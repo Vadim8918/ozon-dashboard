@@ -42,7 +42,7 @@ body {
   justify-content: space-between;
   gap: 24px;
   padding: 22px;
-  margin-top: 14px;
+  margin-top: 8px;
 }
 
 h1,
@@ -85,18 +85,174 @@ form {
 
 .costTemplateActions {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   align-items: center;
   margin-left: auto;
   margin-right: 10px;
 }
 
-.costTemplateActions button {
-  width: 150px;
-  min-width: 150px;
+.costTemplateActions > button,
+.taxationModeButton {
+  width: 270px;
+  min-width: 270px;
+  min-height: 32px;
   padding: 0 12px;
-  font-size: inherit;
-  line-height: 1.1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.05;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+
+.taxationModeMenu {
+  position: relative;
+  width: 290px;
+  min-width: 290px;
+}
+
+.taxationModeButton {
+  width: 100%;
+  min-width: 0;
+  justify-content: space-between;
+}
+
+.taxationModeButton::after,
+.taxationModeItem.hasSubmenu > button::after {
+  content: "▾";
+  margin-left: 10px;
+  font-size: 10px;
+}
+
+.taxationModeItem.hasSubmenu > button::after {
+  content: "›";
+  font-size: 14px;
+}
+
+.taxationModeButton:hover,
+.taxationModeButton:focus {
+  border-color: #9bb7ef;
+  background: #eef5ff;
+  color: var(--blue);
+  outline: none;
+}
+
+.taxationModeDropdown,
+.taxationSubmenu {
+  position: absolute;
+  z-index: 40;
+  display: grid;
+  gap: 2px;
+  min-width: 230px;
+  padding: 8px;
+  border: 1px solid #d8e0ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 40px rgba(23, 32, 51, 0.16);
+}
+
+.taxationModeDropdown {
+  top: calc(100% + 6px);
+  left: 0;
+}
+
+.taxationSubmenu {
+  top: -8px;
+  left: calc(100% + 8px);
+  display: none;
+  min-width: 96px;
+}
+
+.taxationModeDropdown.hidden {
+  display: none;
+}
+
+.taxationModeDropdown button,
+.taxationSubmenu button {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  justify-content: space-between;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font-weight: 600;
+  text-align: left;
+}
+
+.taxationModeDropdown button:hover,
+.taxationModeDropdown button:focus,
+.taxationSubmenu button:hover,
+.taxationSubmenu button:focus {
+  background: #eef5ff;
+  color: var(--blue);
+  outline: none;
+}
+
+.taxationModeItem {
+  position: relative;
+}
+
+.taxationModeItem:hover .taxationSubmenu,
+.taxationModeItem:focus-within .taxationSubmenu {
+  display: grid;
+}
+
+.taxationModeInfo {
+  position: absolute;
+  top: 0;
+  right: calc(100% + 8px);
+  width: 272px;
+  min-height: 118px;
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  padding: 14px;
+  border: 1px solid #d8e0ee;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 40px rgba(23, 32, 51, 0.16);
+  color: var(--text);
+}
+
+.taxationModeInfo strong {
+  color: var(--dark);
+  font-size: 16px;
+  line-height: 1.25;
+}
+
+.taxationModeInfo span {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.costTemplateActions button span {
+  display: inline;
+}
+
+.costTemplateActions > button:hover {
+  border-color: #9bb7ef;
+  background: #eef5ff;
+  color: var(--blue);
+}
+
+.status .costTemplateActions {
+  display: none;
+}
+
+.dailyCardsControl .costTemplateActions {
+  display: flex;
 }
 
 .comparisonGroup {
@@ -551,6 +707,24 @@ input[readonly] {
   grid-template-columns: 1fr 1fr;
 }
 
+#adminAccountName.maskedText,
+#adminClientId.maskedText {
+  color: transparent;
+  text-shadow: none;
+  caret-color: transparent;
+}
+
+.adminFieldHint {
+  display: block;
+  min-height: 18px;
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 h3 {
   margin: 0;
   font-size: 15px;
@@ -580,12 +754,12 @@ h3 {
 }
 
 .status {
-  margin-top: 14px;
-  padding: 12px 22px;
+  margin-top: 0;
+  padding: 8px 22px;
   display: flex;
   align-items: center;
   gap: 16px;
-  min-height: 58px;
+  min-height: 46px;
 }
 
 .status.error {
@@ -594,7 +768,9 @@ h3 {
 }
 
 .dailyControls {
-  min-height: 108px;
+  min-height: 96px;
+  padding-top: 16px;
+  padding-bottom: 16px;
   align-items: center;
   box-shadow: 0 12px 30px rgba(23, 32, 51, 0.04);
 }
@@ -612,8 +788,8 @@ h3 {
 
 .dailyOverview {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin: 16px 0 18px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 0 0 18px;
   overflow: hidden;
   background: var(--panel);
   border: 1px solid transparent;
@@ -854,6 +1030,10 @@ h3 {
 
 .profitBlock {
   align-content: stretch;
+}
+
+.netProfitChart span {
+  background: #2563eb;
 }
 
 .profitRows {
@@ -1311,15 +1491,15 @@ h3 {
 }
 
 .categoryProfitTable {
-  min-width: 1080px;
+  min-width: 1880px;
 }
 
 .typeProfitPanel .categoryProfitTable {
-  min-width: 1180px;
+  min-width: 1880px;
 }
 
 .articleProfitPanel .categoryProfitTable {
-  min-width: 1500px;
+  min-width: 2400px;
 }
 
 .categoryProfitTable th {
@@ -1857,6 +2037,11 @@ td:last-child {
     justify-self: stretch;
   }
 
+  .costTemplateActions > button,
+  .taxationModeMenu {
+    flex: 1 1 230px;
+  }
+
   .dailyOverview,
   .dailyCards {
     grid-template-columns: 1fr 1fr;
@@ -1918,6 +2103,34 @@ td:last-child {
 
   .profitFilterInput {
     width: 100%;
+  }
+
+  .costTemplateActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .costTemplateActions > button,
+  .taxationModeMenu {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .taxationModeDropdown,
+  .taxationSubmenu {
+    position: static;
+    box-shadow: none;
+  }
+
+  .taxationSubmenu {
+    margin-left: 12px;
+  }
+
+  .taxationModeInfo {
+    position: static;
+    width: auto;
+    min-height: 0;
+    box-shadow: none;
   }
 
   .backToTopButton {

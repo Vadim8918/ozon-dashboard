@@ -80,11 +80,13 @@
               </div>
               <label>
                 <span>Название</span>
-                <input id="adminAccountName" autocomplete="off" />
+                <input id="adminAccountName" class="maskedText" autocomplete="off" />
+                <span id="adminAccountNameHint" class="adminFieldHint"></span>
               </label>
               <label>
                 <span>Client ID</span>
-                <input id="adminClientId" inputmode="numeric" autocomplete="off" />
+                <input id="adminClientId" class="maskedText" inputmode="numeric" autocomplete="off" />
+                <span id="adminClientIdHint" class="adminFieldHint"></span>
               </label>
               <label>
                 <span>API Key</span>
@@ -194,9 +196,46 @@
           <section id="status" class="status">
             <span id="statusText">Выберите период и нажмите “Рассчитать”.</span>
             <div class="costTemplateActions">
-              <button id="downloadCostTemplate" type="button">Скачать шаблон</button>
-              <button id="uploadCostTemplate" type="button">Загрузить шаблон</button>
-              <input id="costTemplateFile" class="hidden" type="file" accept=".csv,text/csv" />
+              <div id="taxationMode" class="taxationModeMenu">
+                <button id="taxationModeButton" class="taxationModeButton" type="button">ОСНО</button>
+                <div id="taxationModeDropdown" class="taxationModeDropdown hidden">
+                  <button type="button" data-taxation-value="osno">ОСНО</button>
+                  <div class="taxationModeItem hasSubmenu">
+                    <button type="button">УСН доходы</button>
+                    <div class="taxationSubmenu">
+                      <button type="button" data-taxation-value="usn_income_1">1%</button>
+                      <button type="button" data-taxation-value="usn_income_2">2%</button>
+                      <button type="button" data-taxation-value="usn_income_3">3%</button>
+                      <button type="button" data-taxation-value="usn_income_4">4%</button>
+                      <button type="button" data-taxation-value="usn_income_5">5%</button>
+                      <button type="button" data-taxation-value="usn_income_6">6%</button>
+                    </div>
+                  </div>
+                  <div class="taxationModeItem hasSubmenu">
+                    <button type="button">УСН доходы-расходы</button>
+                    <div class="taxationSubmenu">
+                      <button type="button" data-taxation-value="usn_income_expense_5">5%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_6">6%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_7">7%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_8">8%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_9">9%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_10">10%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_11">11%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_12">12%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_13">13%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_14">14%</button>
+                      <button type="button" data-taxation-value="usn_income_expense_15">15%</button>
+                    </div>
+                  </div>
+                  <button type="button" data-taxation-value="ausn_income">АУСН доходы 8%</button>
+                  <button type="button" data-taxation-value="ausn_income_expense">АУСН доходы-расходы 20%</button>
+                  <button type="button" data-taxation-value="psn">ПСН</button>
+                  <button type="button" data-taxation-value="npd">НПД</button>
+                </div>
+              </div>
+              <button id="downloadCostTemplate" type="button"><span>Скачать шаблон с себестоимостью</span></button>
+              <button id="uploadCostTemplate" type="button"><span>Загрузить шаблон с себестоимостью</span></button>
+              <input id="costTemplateFile" class="hidden" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" />
             </div>
           </section>
 
@@ -241,8 +280,15 @@
                 <div><span>Рентабельность</span><strong id="profitRoi">-</strong></div>
                 <div><span>ДРР</span><strong id="profitDrr">-</strong></div>
               </div>
-              <div class="miniChart">
-                <span></span><span></span><span></span><span></span><span></span>
+            </article>
+
+            <article class="reportBlock profitBlock netProfitBlock">
+              <h2>Чистая прибыль</h2>
+              <strong id="netProfit" class="reportValue">-</strong>
+              <div class="profitRows">
+                <div><span>Маржинальность</span><strong id="netProfitMargin">-</strong></div>
+                <div><span>Рентабельность</span><strong id="netProfitRoi">-</strong></div>
+                <div><span>ДРР</span><strong id="netProfitDrr">-</strong></div>
               </div>
             </article>
           </section>
@@ -385,10 +431,17 @@
                     <th><button type="button" data-sort-key="items_count">Товаров</button></th>
                     <th><button type="button" data-sort-key="revenue">Всего продано</button></th>
                     <th><button type="button" data-sort-key="commission">Комиссии</button></th>
-                    <th><button type="button" data-sort-key="services">Услуги</button></th>
+                    <th><button type="button" data-sort-key="service_logistics">Логистика</button></th>
+                    <th><button type="button" data-sort-key="service_delivery">Доставка</button></th>
+                    <th><button type="button" data-sort-key="service_processing">Обработка отправления</button></th>
+                    <th><button type="button" data-sort-key="service_mainline">Магистраль</button></th>
+                    <th><button type="button" data-sort-key="service_last_mile">Последняя миля</button></th>
+                    <th><button type="button" data-sort-key="service_other">Прочие услуги</button></th>
                     <th><button type="button" data-sort-key="returns">Возвраты</button></th>
                     <th><button type="button" data-sort-key="paid_storage">Платное хранение</button></th>
                     <th><button type="button" data-sort-key="profit_before_cost">Чистая прибыль до себестоимости</button></th>
+                    <th><button type="button" data-sort-key="buyout_cost">Себестоимость выкупленных</button></th>
+                    <th><button type="button" data-sort-key="net_profit">Чистая прибыль</button></th>
                   </tr>
                 </thead>
                 <tbody id="categoryProfitRows"></tbody>
@@ -418,10 +471,17 @@
                     <th><button type="button" data-sort-key="items_count">Товаров</button></th>
                     <th><button type="button" data-sort-key="revenue">Всего продано</button></th>
                     <th><button type="button" data-sort-key="commission">Комиссии</button></th>
-                    <th><button type="button" data-sort-key="services">Услуги</button></th>
+                    <th><button type="button" data-sort-key="service_logistics">Логистика</button></th>
+                    <th><button type="button" data-sort-key="service_delivery">Доставка</button></th>
+                    <th><button type="button" data-sort-key="service_processing">Обработка отправления</button></th>
+                    <th><button type="button" data-sort-key="service_mainline">Магистраль</button></th>
+                    <th><button type="button" data-sort-key="service_last_mile">Последняя миля</button></th>
+                    <th><button type="button" data-sort-key="service_other">Прочие услуги</button></th>
                     <th><button type="button" data-sort-key="returns">Возвраты</button></th>
                     <th><button type="button" data-sort-key="paid_storage">Платное хранение</button></th>
                     <th><button type="button" data-sort-key="profit_before_cost">Чистая прибыль до себестоимости</button></th>
+                    <th><button type="button" data-sort-key="buyout_cost">Себестоимость выкупленных</button></th>
+                    <th><button type="button" data-sort-key="net_profit">Чистая прибыль</button></th>
                   </tr>
                 </thead>
                 <tbody id="typeProfitRows"></tbody>
@@ -447,10 +507,17 @@
                     <th><button type="button" data-sort-key="type">Тип товара</button></th>
                     <th><button type="button" data-sort-key="revenue">Всего продано</button></th>
                     <th><button type="button" data-sort-key="commission">Комиссии</button></th>
-                    <th><button type="button" data-sort-key="services">Услуги</button></th>
+                    <th><button type="button" data-sort-key="service_logistics">Логистика</button></th>
+                    <th><button type="button" data-sort-key="service_delivery">Доставка</button></th>
+                    <th><button type="button" data-sort-key="service_processing">Обработка отправления</button></th>
+                    <th><button type="button" data-sort-key="service_mainline">Магистраль</button></th>
+                    <th><button type="button" data-sort-key="service_last_mile">Последняя миля</button></th>
+                    <th><button type="button" data-sort-key="service_other">Прочие услуги</button></th>
                     <th><button type="button" data-sort-key="returns">Возвраты</button></th>
                     <th><button type="button" data-sort-key="paid_storage">Платное хранение</button></th>
                     <th><button type="button" data-sort-key="profit_before_cost">Чистая прибыль до себестоимости</button></th>
+                    <th><button type="button" data-sort-key="buyout_cost">Себестоимость выкупленных</button></th>
+                    <th><button type="button" data-sort-key="net_profit">Чистая прибыль</button></th>
                   </tr>
                 </thead>
                 <tbody id="articleProfitRows"></tbody>
