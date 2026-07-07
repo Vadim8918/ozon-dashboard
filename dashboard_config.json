@@ -1,14 +1,13 @@
 {
   "ozon": {
-    "client_id": "406650",
-    "api_key": "f7fb17a9-b9df-4ce6-8325-c6bd1e114a8c"
+    "client_id": "3801",
+    "api_key": "5914cd4f-0abb-4790-a0ca-16107175d01b"
   },
   "users": [
     {
       "login": "filkina-gramota3801",
-      "role": "owner",
-      "password_hash": "pbkdf2_sha256$27f800f6717fc56c03562d018ec1bb72$KOGgmq6wefgLjhoKNP4438fvnBkmc9ZHF0NTPtVv1bs=",
-      "client_id": "3801",
+      "role": "user",
+      "password_hash": "pbkdf2_sha256$7b7652e85765ecf2e09a4f37a772d7a3$UfPPFd0EbtmS+elchhzmrOTgs4u+qBhrBgXgC9FfrfM=",
       "allowed_client_ids": [
         "3801"
       ]

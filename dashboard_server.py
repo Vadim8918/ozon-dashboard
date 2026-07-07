@@ -1,6 +1,7 @@
 import json
 import re
 import base64
+import csv
 import hashlib
 import hmac
 import os
@@ -25,9 +26,14 @@ APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "dashboard"
 CONFIG_PATH = APP_DIR / "dashboard_config.json"
 CACHE_DIR = APP_DIR / "cache"
+TARIFFS_DIR = CACHE_DIR / "tariff_files"
+TARIFFS_META_PATH = CACHE_DIR / "tariffs_meta.json"
 SESSION_SECRET = secrets.token_bytes(32)
 ADMIN_ROLES = {"owner", "admin"}
 TNVED_CACHE_TTL_SECONDS = 5 * 60
+REPORT_CACHE_TTL_SECONDS = 30 * 60
+REPORT_CACHE_VERSION = 2
+APP_TZ = timezone(timedelta(hours=3))
 TNVED_CACHE: dict[str, dict[str, Any]] = {}
 TNVED_CACHE_LOCK = threading.Lock()
 TNVED_REFRESHING: set[str] = set()
@@ -1968,6 +1974,118 @@ def costs_file(client_id: str) -> Path:
     return CACHE_DIR / f"costs_{safe_client_id}.json"
 
 
+def safe_upload_filename(file_name: str, default: str = "tariffs.xlsx") -> str:
+    name = Path(str(file_name or default)).name.strip() or default
+    return re.sub(r"[^0-9A-Za-zА-Яа-яЁё_.() -]", "_", name)
+
+
+def load_tariffs_meta() -> dict[str, Any]:
+    if not TARIFFS_META_PATH.exists():
+        return {}
+    try:
+        data = json.loads(TARIFFS_META_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_tariffs_upload(file_name: str, file_type: str, file_size: Any, file_data: str) -> dict[str, Any]:
+    if not file_data:
+        raise ValueError("Файл тарифов не передан.")
+    safe_name = safe_upload_filename(file_name)
+    suffix = Path(safe_name).suffix.lower()
+    if suffix not in {".xlsx", ".csv"}:
+        raise ValueError("Загрузите файл тарифов в формате Excel .xlsx или CSV.")
+    content = base64.b64decode(file_data)
+    try:
+        TARIFFS_DIR.mkdir(parents=True, exist_ok=True)
+        file_path = TARIFFS_DIR / safe_name
+    except OSError:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        file_path = CACHE_DIR / f"tariffs_{safe_name}"
+    file_path.write_bytes(content)
+    meta = {
+        "name": safe_name,
+        "path": str(file_path),
+        "type": str(file_type or ""),
+        "size": int(file_size or len(content)),
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    TARIFFS_META_PATH.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return meta
+
+
+def xlsx_rows_from_bytes(content: bytes, max_rows: int = 200, max_columns: int = 40) -> list[list[str]]:
+    namespace = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
+    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+        shared_strings: list[str] = []
+        if "xl/sharedStrings.xml" in archive.namelist():
+            shared_root = ET.fromstring(archive.read("xl/sharedStrings.xml"))
+            for item in shared_root.iter(f"{namespace}si"):
+                shared_strings.append("".join(text.text or "" for text in item.iter(f"{namespace}t")))
+        sheet_name = "xl/worksheets/sheet1.xml"
+        if sheet_name not in archive.namelist():
+            worksheet_names = [name for name in archive.namelist() if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")]
+            if not worksheet_names:
+                raise ValueError("Excel worksheet was not found.")
+            sheet_name = sorted(worksheet_names)[0]
+        sheet_root = ET.fromstring(archive.read(sheet_name))
+    raw_rows: list[tuple[int, dict[int, str]]] = []
+    min_column: int | None = None
+    max_column = 0
+    for row in sheet_root.iter(f"{namespace}row"):
+        values: dict[int, str] = {}
+        for cell in row.iter(f"{namespace}c"):
+            column = xlsx_column_index(cell.attrib.get("r", ""))
+            if column is not None:
+                text = xlsx_cell_text(cell, shared_strings)
+                if text:
+                    values[column] = text
+                    min_column = column if min_column is None else min(min_column, column)
+                    max_column = max(max_column, column)
+        if not any(str(value).strip() for value in values.values()):
+            continue
+        row_number = int(row.attrib.get("r") or "0")
+        raw_rows.append((row_number, values))
+        if len(raw_rows) >= max_rows:
+            break
+    if min_column is None:
+        return []
+    columns = list(range(min_column, min(max_column + 1, min_column + max_columns)))
+    rows: list[list[str]] = []
+    for _, values in raw_rows:
+        rows.append([format_tariff_preview_value(values.get(column, ""), column) for column in columns])
+    return rows
+
+
+def csv_rows_from_bytes(content: bytes, max_rows: int = 200, max_columns: int = 40) -> list[list[str]]:
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            text = content.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            text = ""
+    rows: list[list[str]] = []
+    for row in csv.reader(io.StringIO(text), delimiter=";"):
+        rows.append([str(value) for value in row[:max_columns]])
+        if len(rows) >= max_rows:
+            break
+    return rows
+
+
+def load_tariffs_preview() -> dict[str, Any]:
+    meta = load_tariffs_meta()
+    if not meta:
+        return {"file": None, "rows": []}
+    file_path = Path(str(meta.get("path") or ""))
+    if not file_path.exists():
+        return {"file": meta, "rows": [], "error": "Файл тарифов не найден на диске."}
+    content = file_path.read_bytes()
+    suffix = file_path.suffix.lower()
+    rows = csv_rows_from_bytes(content) if suffix == ".csv" else xlsx_rows_from_bytes(content)
+    return {"file": meta, "rows": rows, "limited": len(rows) >= 200}
+
+
 def load_costs(client_id: str) -> dict[str, str]:
     path = costs_file(client_id)
     if not path.exists():
@@ -2042,6 +2160,19 @@ def xlsx_cell_text(cell: ET.Element, shared_strings: list[str]) -> str:
             return shared_strings[int(text)].strip()
         except (ValueError, IndexError):
             return ""
+    return text
+
+
+def format_tariff_preview_value(value: str, column: int) -> str:
+    text = str(value or "").strip()
+    if column < 3 or not text:
+        return text
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    if 0 <= number <= 1:
+        return f"{number * 100:.2f}%".replace(".", ",")
     return text
 
 
@@ -2221,6 +2352,69 @@ def tnved_cache_status(account: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def report_cache_file(client_id: str) -> Path:
+    safe_client_id = re.sub(r"[^0-9A-Za-z_-]+", "_", client_id or "default")
+    return CACHE_DIR / f"report_{safe_client_id}.json"
+
+
+def default_report_periods() -> dict[str, dict[str, str]]:
+    today = datetime.now(APP_TZ).date()
+    current_day = today - timedelta(days=1)
+    compare_day = today - timedelta(days=2)
+    return {
+        "current": {
+            "from": current_day.isoformat(),
+            "to": current_day.isoformat(),
+            "label": current_day.isoformat(),
+        },
+        "compare": {
+            "from": compare_day.isoformat(),
+            "to": compare_day.isoformat(),
+            "label": compare_day.isoformat(),
+        },
+    }
+
+
+def read_report_cache_record(client_id: str, api_key: str) -> dict[str, Any] | None:
+    path = report_cache_file(client_id)
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if record.get("api_key_fingerprint") != api_key_fingerprint(api_key):
+        return None
+    if record.get("cache_version") != REPORT_CACHE_VERSION:
+        return None
+    if not isinstance(record.get("current"), dict) or not isinstance(record.get("compare"), dict):
+        return None
+    return record
+
+
+def write_report_cache_record(
+    client_id: str,
+    api_key: str,
+    periods: dict[str, dict[str, str]],
+    current_summary: dict[str, Any],
+    compare_summary: dict[str, Any],
+) -> dict[str, Any]:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(seconds=REPORT_CACHE_TTL_SECONDS)
+    record = {
+        "cache_version": REPORT_CACHE_VERSION,
+        "api_key_fingerprint": api_key_fingerprint(api_key),
+        "updated_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "periods": periods,
+        "current": current_summary,
+        "compare": compare_summary,
+    }
+    report_cache_file(client_id).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    return record
+
+
 def build_summary(date_from: str, date_to: str, client_id: str | None = None, period_label: str = "") -> dict[str, Any]:
     selected_client_id, api_key, account_name = get_ozon_credentials(client_id)
     if not selected_client_id or not api_key:
@@ -2302,6 +2496,77 @@ def build_summary(date_from: str, date_to: str, client_id: str | None = None, pe
         "orders": postings,
         "errors": errors,
         "notes": notes,
+    }
+
+
+def report_cache_response(record: dict[str, Any], *, hit: bool) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    expires_at = parse_iso_datetime(record.get("expires_at"))
+    return {
+        "current": record.get("current") or {},
+        "compare": record.get("compare") or {},
+        "periods": record.get("periods") or default_report_periods(),
+        "cache": {
+            "hit": hit,
+            "updated_at": str(record.get("updated_at") or ""),
+            "expires_at": expires_at.isoformat(),
+            "stale": expires_at <= now,
+            "ttl_seconds": REPORT_CACHE_TTL_SECONDS,
+        },
+    }
+
+
+def build_default_report(client_id: str | None = None) -> dict[str, Any]:
+    selected_client_id, api_key, _account_name = get_ozon_credentials(client_id)
+    if not selected_client_id or not api_key:
+        raise ValueError("Владелец еще не настроил Client ID и API Key в админке.")
+
+    periods = default_report_periods()
+    record = read_report_cache_record(selected_client_id, api_key)
+    now = datetime.now(timezone.utc)
+    if record and record.get("periods") == periods and parse_iso_datetime(record.get("expires_at")) > now:
+        return report_cache_response(record, hit=True)
+
+    current_period = periods["current"]
+    compare_period = periods["compare"]
+    current_from, current_to, current_label = date_range(current_period["from"], current_period["to"])
+    compare_from, compare_to, compare_label = date_range(compare_period["from"], compare_period["to"])
+    current_summary = build_summary(
+        current_from,
+        current_to,
+        selected_client_id,
+        current_label,
+    )
+    compare_summary = build_summary(
+        compare_from,
+        compare_to,
+        selected_client_id,
+        compare_label,
+    )
+    record = write_report_cache_record(selected_client_id, api_key, periods, current_summary, compare_summary)
+    return report_cache_response(record, hit=False)
+
+
+def report_cache_status(account: dict[str, Any]) -> dict[str, Any]:
+    client_id = str(account.get("client_id", "")).strip()
+    api_key = str(account.get("api_key", ""))
+    periods = default_report_periods()
+    record = read_report_cache_record(client_id, api_key) if client_id and api_key else None
+    expires_at = parse_iso_datetime(record.get("expires_at")) if record else None
+    period_mismatch = bool(record and record.get("periods") != periods)
+    stale = bool(period_mismatch or (expires_at and expires_at <= datetime.now(timezone.utc)))
+    record_periods = record.get("periods") if record else periods
+    return {
+        "client_id": client_id,
+        "name": str(account.get("name", "")),
+        "has_cache": bool(record),
+        "stale": stale,
+        "updated_at": str(record.get("updated_at") or "") if record else "",
+        "expires_at": expires_at.isoformat() if expires_at else "",
+        "current_period": (record_periods or periods).get("current", periods["current"]),
+        "compare_period": (record_periods or periods).get("compare", periods["compare"]),
+        "expected_current_period": periods["current"],
+        "expected_compare_period": periods["compare"],
     }
 
 
@@ -2471,6 +2736,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         existing[sku] = cost
                 saved_count = save_costs(client_id, existing)
                 self.send_json(200, {"ok": True, "saved": saved_count, "items": rows})
+            except Exception as exc:
+                self.send_json(400, {"error": str(exc)})
+            return
+
+        if path == "/api/tariffs/upload":
+            user = self.require_user()
+            if not user:
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                meta = save_tariffs_upload(
+                    str(payload.get("file_name") or ""),
+                    str(payload.get("file_type") or ""),
+                    payload.get("file_size"),
+                    str(payload.get("file_data") or ""),
+                )
+                self.send_json(200, {"ok": True, "file": meta})
             except Exception as exc:
                 self.send_json(400, {"error": str(exc)})
             return
@@ -2709,9 +2991,40 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {
                     "active_client_id": selected_client_id,
                     "ttl_seconds": TNVED_CACHE_TTL_SECONDS,
+                    "report_ttl_seconds": REPORT_CACHE_TTL_SECONDS,
                     "items": [tnved_cache_status(account) for account in accounts],
+                    "report_items": [report_cache_status(account) for account in accounts],
                 },
             )
+            return
+
+        if path == "/api/default-summary":
+            user = self.require_user()
+            if not user:
+                return
+            try:
+                config = load_config()
+                self.send_json(200, build_default_report(selected_client_id_for_user(user, config)))
+            except Exception as exc:
+                self.send_json(400, {"error": str(exc)})
+            return
+
+        if path == "/api/tariffs":
+            user = self.require_user()
+            if not user:
+                return
+            meta = load_tariffs_meta()
+            self.send_json(200, {"file": meta or None})
+            return
+
+        if path == "/api/tariffs/preview":
+            user = self.require_user()
+            if not user:
+                return
+            try:
+                self.send_json(200, load_tariffs_preview())
+            except Exception as exc:
+                self.send_json(400, {"error": str(exc)})
             return
 
         if path == "/api/tnved":

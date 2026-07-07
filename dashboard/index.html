@@ -36,7 +36,9 @@
           <nav class="tabs" aria-label="Разделы">
             <button id="dashboardTab" class="tabButton active" type="button">Дашборд</button>
             <button id="tnvedTab" class="tabButton" type="button">Товары</button>
+            <button id="unitTab" class="tabButton" type="button">Юнит</button>
             <button id="cacheTab" class="tabButton" type="button">Кэш</button>
+            <button id="tariffsTab" class="tabButton" type="button">Тарифы</button>
             <button id="adminTab" class="tabButton hidden" type="button">Админ панель</button>
           </nav>
           <div class="accountArea">
@@ -562,13 +564,31 @@
           <section class="panel cachePanel">
             <div class="cacheHeader">
               <div>
-                <h1>Кэш</h1>
-                <p>Товары хранятся на сервере и показываются сразу, а Ozon обновляется фоном каждые 5 минут.</p>
+                <h1>Кэш по товарам</h1>
+                <p>Здесь хранится сохраненный список товаров Ozon по каждому Client ID. Данные обновляются фоном каждые 5 минут.</p>
               </div>
               <button id="cacheRefresh" type="button">Обновить статус</button>
             </div>
-            <div id="cacheStatus" class="cacheStatus">Кэш еще не проверен.</div>
+            <div id="cacheStatus" class="cacheStatus">Кэш по товарам еще не проверен.</div>
             <div id="cacheRows" class="cacheRows"></div>
+          </section>
+        </section>
+
+        <section id="tariffsView" class="hidden">
+          <section class="panel tariffsPanel">
+            <div class="tariffUploadRow">
+              <div>
+                <h1>Тарифы</h1>
+                <p>Категории и типы расчета вознаграждений с 1 июля 2026 г.</p>
+                <small id="tariffsStatus">Файл тарифов еще не загружен.</small>
+              </div>
+              <div class="tariffActions">
+                <button id="viewTariffsFile" class="secondaryButton" type="button">Посмотреть</button>
+                <button id="uploadTariffsFile" class="refreshButton" type="button">Загрузить файл</button>
+              </div>
+              <input id="tariffsFile" class="hidden" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" />
+            </div>
+            <div id="tariffsPreview" class="tariffsPreview hidden"></div>
           </section>
         </section>
       </section>

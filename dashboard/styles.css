@@ -1604,6 +1604,168 @@ h3 {
   padding: 20px;
 }
 
+.tariffsPanel {
+  margin-top: 14px;
+  padding: 20px;
+}
+
+.tariffUploadRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.tariffUploadRow p {
+  margin-top: 8px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.tariffUploadRow small {
+  display: block;
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.tariffActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+
+.tariffUploadRow button {
+  width: 170px;
+  flex: 0 0 auto;
+}
+
+.tariffsPreview {
+  margin-top: 18px;
+}
+
+.tariffsPreviewHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 10px;
+}
+
+.tariffsPreviewHeader b {
+  display: block;
+  color: var(--text);
+}
+
+.tariffsPreviewHeader span {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.tariffsTableWrap {
+  max-height: 640px;
+  overflow-x: auto;
+  overflow-y: auto;
+  border: 1px solid #d0d7de;
+  background: #fff;
+  scrollbar-gutter: stable both-edges;
+  padding-bottom: 2px;
+}
+
+.tariffsTableWrap::-webkit-scrollbar {
+  width: 14px;
+  height: 14px;
+}
+
+.tariffsTableWrap::-webkit-scrollbar-thumb {
+  background: #8b95a1;
+  border: 3px solid #f3f4f6;
+  border-radius: 999px;
+}
+
+.tariffsTableWrap::-webkit-scrollbar-track {
+  background: #f3f4f6;
+}
+
+.tariffsTable {
+  width: max-content;
+  min-width: max-content;
+  border-collapse: collapse;
+  font-size: 12px;
+  table-layout: fixed;
+  margin-right: 28px;
+}
+
+.tariffsTable th,
+.tariffsTable td {
+  width: 136px;
+  min-width: 136px;
+  padding: 4px 6px;
+  border: 1px solid #d0d7de;
+  vertical-align: middle;
+  text-align: center;
+  line-height: 1.15;
+  white-space: normal;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.tariffsTable th {
+  background: #f8fafc;
+  color: var(--text);
+  font-weight: 800;
+}
+
+.tariffsTable td:nth-child(2),
+.tariffsTable td:nth-child(3),
+.tariffsTable td:nth-child(4),
+.tariffsTable thead tr:not(:first-child) th:nth-child(2),
+.tariffsTable thead tr:not(:first-child) th:nth-child(3),
+.tariffsTable thead tr:not(:first-child) th:nth-child(4) {
+  width: 150px;
+  min-width: 150px;
+  text-align: left;
+}
+
+.tariffsTable th:last-child,
+.tariffsTable td:last-child {
+  width: 156px;
+  min-width: 156px;
+  padding-right: 18px;
+}
+
+.tariffsTable .sheetCorner,
+.tariffsTable .sheetColumnName,
+.tariffsTable .sheetRowName {
+  background: #f3f4f6;
+  color: #4b5563;
+  font-weight: 700;
+  text-align: center;
+}
+
+.tariffsTable .sheetCorner,
+.tariffsTable .sheetRowName {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  width: 54px;
+  min-width: 54px;
+}
+
+.tariffsTable .sheetColumnName {
+  top: 0;
+  z-index: 4;
+  height: 22px;
+  padding: 2px 6px;
+}
+
+.tariffsTable .sheetCorner {
+  top: 0;
+  z-index: 5;
+}
+
 .cacheHeader {
   display: flex;
   align-items: end;
@@ -1634,6 +1796,12 @@ h3 {
   margin-top: 14px;
 }
 
+.cacheSectionTitle {
+  margin-top: 8px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .cacheRow {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) 110px 190px 190px 150px;
@@ -1643,6 +1811,10 @@ h3 {
   border: 1px solid transparent;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.reportCacheRow {
+  grid-template-columns: minmax(220px, 1fr) 190px 190px 190px 190px 150px;
 }
 
 .cacheRow > div {
@@ -1809,6 +1981,7 @@ h3 {
   padding: 8px 7px;
   font-size: 11px;
   text-transform: uppercase;
+  text-align: center;
   vertical-align: middle;
 }
 
@@ -1818,6 +1991,7 @@ h3 {
   background: #f2f7ff;
   color: #001836;
   font-size: 12px;
+  text-align: center;
   vertical-align: middle;
 }
 
@@ -1826,13 +2000,41 @@ h3 {
 }
 
 .thInner {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: center;
   gap: 6px;
+  min-height: 22px;
+  padding-right: 24px;
+  text-align: center;
+}
+
+.thInner span {
+  overflow-wrap: anywhere;
+}
+
+.columnResizeHandle {
+  position: absolute;
+  right: -4px;
+  top: 0;
+  z-index: 11;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.columnResizeHandle:hover,
+.columnResizing .columnResizeHandle {
+  background: rgba(255, 255, 255, 0.22);
 }
 
 .filterButton {
+  position: absolute;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
   width: 20px;
   height: 20px;
   min-width: 20px;
@@ -1931,6 +2133,7 @@ h3 {
 .tnvedCol-name {
   width: 260px;
   font-weight: 700;
+  text-align: center;
 }
 
 .tnvedCol-status,
@@ -1938,7 +2141,9 @@ h3 {
 .tnvedCol-fbs,
 .tnvedCol-price,
 .tnvedCol-discount_price,
-.tnvedCol-old_price {
+.tnvedCol-old_price,
+.tnvedCol-commission_percent,
+.tnvedCol-unit_profit {
   width: 90px;
   text-align: center;
 }
@@ -1955,6 +2160,7 @@ h3 {
 
 .tnvedCol-tnved {
   width: 96px;
+  text-align: center;
 }
 
 table {

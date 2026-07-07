@@ -19,6 +19,11 @@ const compareDateToInput = document.querySelector("#compareDateTo");
 const downloadCostTemplateButton = document.querySelector("#downloadCostTemplate");
 const uploadCostTemplateButton = document.querySelector("#uploadCostTemplate");
 const costTemplateFileInput = document.querySelector("#costTemplateFile");
+const uploadTariffsFileButton = document.querySelector("#uploadTariffsFile");
+const viewTariffsFileButton = document.querySelector("#viewTariffsFile");
+const tariffsFileInput = document.querySelector("#tariffsFile");
+const tariffsStatus = document.querySelector("#tariffsStatus");
+const tariffsPreview = document.querySelector("#tariffsPreview");
 const taxationModeMenu = document.querySelector("#taxationMode");
 const taxationModeButton = document.querySelector("#taxationModeButton");
 const taxationModeDropdown = document.querySelector("#taxationModeDropdown");
@@ -39,11 +44,14 @@ const userForm = document.querySelector("#userForm");
 const usersList = document.querySelector("#usersList");
 const dashboardTab = document.querySelector("#dashboardTab");
 const tnvedTab = document.querySelector("#tnvedTab");
+const unitTab = document.querySelector("#unitTab");
 const cacheTab = document.querySelector("#cacheTab");
+const tariffsTab = document.querySelector("#tariffsTab");
 const adminTab = document.querySelector("#adminTab");
 const dashboardView = document.querySelector("#dashboardView");
 const tnvedView = document.querySelector("#tnvedView");
 const cacheView = document.querySelector("#cacheView");
+const tariffsView = document.querySelector("#tariffsView");
 const adminView = document.querySelector("#adminView");
 const tnvedSearch = document.querySelector("#tnvedSearch");
 const tnvedOnlyStock = document.querySelector("#tnvedOnlyStock");
@@ -65,6 +73,7 @@ let tnvedItems = [];
 let tnvedLoadedOnce = false;
 let tnvedTimer = null;
 let tnvedLastDuration = null;
+let activeProductsTab = "tnved";
 let cacheLoadedOnce = false;
 let lastSummaryData = null;
 let lastCompareData = null;
@@ -420,6 +429,22 @@ const TNVED_COLUMNS = [
   { key: "cost_price", title: "Себестоимость", type: "number", defaultVisible: true },
 ];
 
+const UNIT_PROFIT_COLUMN = {
+  key: "unit_profit",
+  title: "Прибыль за 1 ед",
+  type: "number",
+  defaultVisible: true,
+};
+
+const UNIT_COMMISSION_PERCENT_COLUMN = {
+  key: "commission_percent",
+  title: "Комиссия %",
+  type: "percent",
+  defaultVisible: true,
+};
+
+const MIN_TNVED_COLUMN_WIDTH = 56;
+
 const DEFAULT_TNVED_STATE = {
   search: "",
   onlyStock: false,
@@ -427,6 +452,7 @@ const DEFAULT_TNVED_STATE = {
   status: "all",
   filters: {},
   visible: Object.fromEntries(TNVED_COLUMNS.map((column) => [column.key, column.defaultVisible])),
+  widths: {},
 };
 
 let tnvedState = loadTnvedState();
@@ -457,6 +483,7 @@ function loadTnvedState() {
     return {
       ...DEFAULT_TNVED_STATE,
       visible: { ...DEFAULT_TNVED_STATE.visible, ...(saved.visible || {}) },
+      widths: { ...(saved.widths || {}) },
     };
   } catch {
     return structuredClone(DEFAULT_TNVED_STATE);
@@ -464,7 +491,10 @@ function loadTnvedState() {
 }
 
 function saveTnvedColumns() {
-  localStorage.setItem(TNVED_STATE_KEY, JSON.stringify({ visible: tnvedState.visible }));
+  localStorage.setItem(TNVED_STATE_KEY, JSON.stringify({
+    visible: tnvedState.visible,
+    widths: tnvedState.widths,
+  }));
 }
 
 function loadHiddenDailyCards() {
@@ -722,6 +752,21 @@ function initDailyCardsControl() {
 
 function formatDateInput(date) {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function formatShortDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) {
+    return value || "-";
+  }
+  return `${match[3]}.${match[2]}`;
+}
+
+function formatShortRange(period) {
+  if (!period?.from || !period?.to) {
+    return "-";
+  }
+  return `${formatShortDate(period.from)} - ${formatShortDate(period.to)}`;
 }
 
 function parseDateInput(value) {
@@ -993,24 +1038,37 @@ async function switchAccount(clientId) {
   if (!adminView.classList.contains("hidden") && canManageAdmin(currentUser)) {
     refreshAdminConfig().catch((error) => setStatus(error.message, true));
   }
+  if (!dashboardView.classList.contains("hidden")) {
+    loadDefaultDashboardSummary();
+  }
 }
 
 function switchTab(tab) {
   if (tab === "admin" && !canManageAdmin(currentUser)) {
     tab = "dashboard";
   }
-  const isTnved = tab === "tnved";
+  const isTnved = tab === "tnved" || tab === "unit";
   const isCache = tab === "cache";
+  const isTariffs = tab === "tariffs";
   const isAdmin = tab === "admin";
   dashboardTab.classList.toggle("active", tab === "dashboard");
-  tnvedTab.classList.toggle("active", isTnved);
+  tnvedTab.classList.toggle("active", tab === "tnved");
+  unitTab.classList.toggle("active", tab === "unit");
   cacheTab.classList.toggle("active", isCache);
+  tariffsTab.classList.toggle("active", isTariffs);
   adminTab.classList.toggle("active", isAdmin);
   dashboardView.classList.toggle("hidden", tab !== "dashboard");
   tnvedView.classList.toggle("hidden", !isTnved);
   cacheView.classList.toggle("hidden", !isCache);
+  tariffsView.classList.toggle("hidden", !isTariffs);
   adminView.classList.toggle("hidden", !isAdmin);
   localStorage.setItem("ozonActiveTab", tab);
+  if (isTnved) {
+    activeProductsTab = tab;
+    if (tnvedLoadedOnce) {
+      renderTnved();
+    }
+  }
   if (isTnved && !tnvedLoadedOnce) {
     loadTnvedProducts();
   }
@@ -1028,11 +1086,12 @@ async function showApp(user) {
   appView.classList.remove("hidden");
   loadAccounts().catch(() => setAccountHeader(null));
   updateUserChrome();
-  setStatus("Выберите период и нажмите “Рассчитать”.");
+  setStatus("Загружаю вчерашний отчет из кэша...");
   if (canManageAdmin(user)) {
     loadAdmin();
   }
   switchTab(localStorage.getItem("ozonActiveTab") || "dashboard");
+  loadDefaultDashboardSummary();
   loadTnvedProducts({ silent: true });
   startTnvedAutoRefresh();
 }
@@ -2070,13 +2129,19 @@ function renderTnvedMeta(data = null) {
 
 async function loadCacheStatus(options = {}) {
   if (!options.silent) {
-    cacheStatus.textContent = "Проверяю кэш...";
+    cacheStatus.textContent = "Проверяю кэш по товарам...";
   }
   try {
     const data = await api("/api/cache");
     cacheLoadedOnce = true;
-    cacheStatus.textContent = `Кэш товаров хранится отдельно для каждого Client ID. Обновление: каждые ${Math.round((data.ttl_seconds || 300) / 60)} мин.`;
+    const productMinutes = Math.round((data.ttl_seconds || 300) / 60);
+    const reportMinutes = Math.round((data.report_ttl_seconds || 1800) / 60);
+    cacheStatus.textContent = `Кэш по товарам хранится отдельно для каждого Client ID. Кэш отчетов за вчера и сравнение тоже отдельный для каждого ID, обновление: каждые ${reportMinutes} мин.`;
     cacheRows.innerHTML = "";
+    const productTitle = document.createElement("div");
+    productTitle.className = "cacheSectionTitle";
+    productTitle.textContent = `Кэш по товарам, обновление каждые ${productMinutes} мин.`;
+    cacheRows.appendChild(productTitle);
     (data.items || []).forEach((item) => {
       const row = document.createElement("div");
       row.className = "cacheRow";
@@ -2108,7 +2173,42 @@ async function loadCacheStatus(options = {}) {
       `;
       cacheRows.appendChild(row);
     });
-    if (!cacheRows.children.length) {
+    const reportTitle = document.createElement("div");
+    reportTitle.className = "cacheSectionTitle";
+    reportTitle.textContent = `Кэш отчетов, обновление каждые ${reportMinutes} мин.`;
+    cacheRows.appendChild(reportTitle);
+    (data.report_items || []).forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "cacheRow reportCacheRow";
+      const current = item.current_period || {};
+      const compare = item.compare_period || {};
+      const state = !item.has_cache ? "Кэша еще нет" : item.stale ? "Ожидает обновления" : "Свежий";
+      row.innerHTML = `
+        <div>
+          <strong>${escapeHtml(item.name || "Ozon аккаунт")}</strong>
+          <span>ID ${escapeHtml(item.client_id)}</span>
+        </div>
+        <div>
+          <span class="small">Период</span>
+          <strong>${escapeHtml(formatShortRange(current))}</strong>
+        </div>
+        <div>
+          <span class="small">Сравнение</span>
+          <strong>${escapeHtml(formatShortRange(compare))}</strong>
+        </div>
+        <div>
+          <span class="small">Обновлено</span>
+          <strong>${item.updated_at ? formatDateTime(item.updated_at) : "-"}</strong>
+        </div>
+        <div>
+          <span class="small">Следующее</span>
+          <strong>${item.expires_at ? formatDateTime(item.expires_at) : "-"}</strong>
+        </div>
+        <div class="cacheState ${item.stale ? "stale" : item.has_cache ? "fresh" : ""}">${state}</div>
+      `;
+      cacheRows.appendChild(row);
+    });
+    if (!(data.items || []).length && !(data.report_items || []).length) {
       cacheRows.innerHTML = '<div class="small">Нет доступных аккаунтов для кэша.</div>';
     }
   } catch (error) {
@@ -2123,13 +2223,104 @@ function renderTnved() {
   renderTnvedRows();
 }
 
+function allTnvedColumns() {
+  if (activeProductsTab !== "unit") {
+    return TNVED_COLUMNS;
+  }
+  return TNVED_COLUMNS.flatMap((column) => (
+    column.key === "cost_price" ? [column, UNIT_COMMISSION_PERCENT_COLUMN, UNIT_PROFIT_COLUMN] : [column]
+  ));
+}
+
 function visibleColumns() {
-  return TNVED_COLUMNS.filter((column) => tnvedState.visible[column.key] !== false);
+  return allTnvedColumns().filter((column) => {
+    if (activeProductsTab === "unit" && column.key === "tnved") {
+      return false;
+    }
+    return tnvedState.visible[column.key] !== false;
+  });
+}
+
+function tnvedCellValue(item, key) {
+  if (key === "unit_profit") {
+    const sellPrice = Number(item.discount_price || item.price || 0);
+    const costPrice = Number(item.cost_price || 0);
+    return sellPrice - costPrice;
+  }
+  if (key === "commission_percent") {
+    const rawValue = item.commission_percent
+      ?? item.commission_rate
+      ?? item.sale_commission_percent
+      ?? item.ozon_commission_percent
+      ?? item.commissionPercent
+      ?? item.commissionRate
+      ?? null;
+    if (rawValue === "" || rawValue === null || rawValue === undefined) {
+      return null;
+    }
+    const numberValue = Number(rawValue);
+    return Math.abs(numberValue) <= 1 ? numberValue * 100 : numberValue;
+  }
+  return item[key];
+}
+
+function tnvedColumnWidth(column) {
+  const width = Number(tnvedState.widths?.[column.key] || 0);
+  return width >= MIN_TNVED_COLUMN_WIDTH ? width : null;
+}
+
+function applyTnvedColumnWidth(cell, column) {
+  const width = tnvedColumnWidth(column);
+  if (!width) {
+    return;
+  }
+  cell.style.width = `${width}px`;
+  cell.style.minWidth = `${width}px`;
+  cell.style.maxWidth = `${width}px`;
+}
+
+function applyTnvedColumnWidthByKey(key) {
+  const column = allTnvedColumns().find((item) => item.key === key);
+  if (!column) {
+    return;
+  }
+  document.querySelectorAll(`.tnvedCol-${key}`).forEach((cell) => applyTnvedColumnWidth(cell, column));
+}
+
+function startTnvedColumnResize(event, column, th) {
+  if (event.button !== 0) {
+    return;
+  }
+  event.preventDefault();
+  event.stopPropagation();
+  closeFilterMenu();
+
+  const startX = event.clientX;
+  const startWidth = th.getBoundingClientRect().width;
+  document.body.classList.add("columnResizing");
+
+  const onPointerMove = (moveEvent) => {
+    const nextWidth = Math.max(MIN_TNVED_COLUMN_WIDTH, Math.round(startWidth + moveEvent.clientX - startX));
+    tnvedState.widths[column.key] = nextWidth;
+    applyTnvedColumnWidthByKey(column.key);
+  };
+
+  const onPointerUp = () => {
+    document.removeEventListener("pointermove", onPointerMove);
+    document.removeEventListener("pointerup", onPointerUp);
+    document.body.classList.remove("columnResizing");
+    saveTnvedColumns();
+  };
+
+  document.addEventListener("pointermove", onPointerMove);
+  document.addEventListener("pointerup", onPointerUp);
 }
 
 function renderColumnsDropdown() {
   columnsDropdown.innerHTML = "";
-  TNVED_COLUMNS.forEach((column) => {
+  allTnvedColumns()
+    .filter((column) => !(activeProductsTab === "unit" && column.key === "tnved"))
+    .forEach((column) => {
     const label = document.createElement("label");
     label.className = "columnOption";
     label.innerHTML = `
@@ -2150,16 +2341,21 @@ function renderTnvedHead() {
   visibleColumns().forEach((column) => {
     const th = document.createElement("th");
     th.className = `tnvedCol-${column.key}`;
+    applyTnvedColumnWidth(th, column);
     th.innerHTML = `
       <div class="thInner">
         <span>${column.title}</span>
         <button class="filterButton ${tnvedState.filters[column.key] ? "active" : ""}" type="button">▾</button>
       </div>
+      <span class="columnResizeHandle" title="Потянуть, чтобы изменить ширину столбца"></span>
     `;
     const filterButton = th.querySelector(".filterButton");
     filterButton.addEventListener("click", (event) => {
       event.stopPropagation();
       openFilterMenu(column, filterButton);
+    });
+    th.querySelector(".columnResizeHandle").addEventListener("pointerdown", (event) => {
+      startTnvedColumnResize(event, column, th);
     });
     tr.appendChild(th);
   });
@@ -2229,14 +2425,14 @@ function filteredTnvedItems() {
   }
   Object.entries(tnvedState.filters).forEach(([key, value]) => {
     const query = String(value).toLowerCase();
-    items = items.filter((item) => String(item[key] ?? "").toLowerCase().includes(query));
+    items = items.filter((item) => String(tnvedCellValue(item, key) ?? "").toLowerCase().includes(query));
   });
-  const sortColumn = TNVED_COLUMNS.find((column) => column.key === tnvedState.sort.key);
+  const sortColumn = allTnvedColumns().find((column) => column.key === tnvedState.sort.key);
   if (sortColumn || tnvedState.sort.key === "product_id") {
     const direction = tnvedState.sort.direction === "desc" ? -1 : 1;
     const sortType = sortColumn?.type || "number";
     const sortKey = sortColumn?.key || "product_id";
-    items.sort((a, b) => compareValues(a[sortKey], b[sortKey], sortType) * direction);
+    items.sort((a, b) => compareValues(tnvedCellValue(a, sortKey), tnvedCellValue(b, sortKey), sortType) * direction);
   }
   return items;
 }
@@ -2271,6 +2467,7 @@ function renderTnvedRows() {
     columns.forEach((column) => {
       const td = document.createElement("td");
       td.className = `tnvedCol-${column.key}`;
+      applyTnvedColumnWidth(td, column);
       td.innerHTML = renderTnvedCell(column, item);
       tr.appendChild(td);
     });
@@ -2291,7 +2488,17 @@ function renderTnvedCell(column, item) {
     if (column.key === "cost_price" && (item[column.key] === "" || item[column.key] === null || item[column.key] === undefined)) {
       return "";
     }
-    return `<span class="numberCell">${formatPlainNumber(item[column.key])}</span>`;
+    if (column.key === "unit_profit" && (item.cost_price === "" || item.cost_price === null || item.cost_price === undefined)) {
+      return "";
+    }
+    return `<span class="numberCell">${formatPlainNumber(tnvedCellValue(item, column.key))}</span>`;
+  }
+  if (column.type === "percent") {
+    const value = tnvedCellValue(item, column.key);
+    if (value === "" || value === null || value === undefined) {
+      return "";
+    }
+    return `<span class="numberCell">${formatPercent(value)}</span>`;
   }
   return escapeHtml(item[column.key] || "");
 }
@@ -2584,6 +2791,141 @@ async function uploadCostTemplate(file) {
   }
 }
 
+async function fileToBase64(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  bytes.forEach((byte) => {
+    binary += String.fromCharCode(byte);
+  });
+  return btoa(binary);
+}
+
+function renderTariffsStatus(data = null) {
+  const file = data?.file || null;
+  if (!tariffsStatus) {
+    return;
+  }
+  if (!file) {
+    tariffsStatus.textContent = "Файл тарифов еще не загружен.";
+    return;
+  }
+  const sizeKb = Number(file.size || 0) ? `, ${Math.round(Number(file.size || 0) / 1024)} КБ` : "";
+  const uploadedAt = file.uploaded_at ? `, загружен: ${formatDateTime(file.uploaded_at)}` : "";
+  tariffsStatus.textContent = `Активный файл: ${file.name || "тарифы"}${sizeKb}${uploadedAt}. Применяется ко всем аккаунтам.`;
+}
+
+async function loadTariffsStatus() {
+  if (!tariffsStatus) {
+    return;
+  }
+  try {
+    renderTariffsStatus(await api("/api/tariffs"));
+  } catch (error) {
+    tariffsStatus.textContent = error.message;
+  }
+}
+
+async function uploadTariffsFile(file) {
+  const name = file.name.toLowerCase();
+  if (!name.endsWith(".xlsx") && !name.endsWith(".csv")) {
+    alert("Загрузите файл тарифов в формате Excel .xlsx или CSV.");
+    return;
+  }
+  uploadTariffsFileButton.disabled = true;
+  tariffsStatus.textContent = "Загружаю файл тарифов...";
+  try {
+    const data = await api("/api/tariffs/upload", {
+      method: "POST",
+      body: JSON.stringify({
+        file_name: file.name,
+        file_type: file.type,
+        file_size: file.size,
+        file_data: await fileToBase64(file),
+      }),
+    });
+    renderTariffsStatus(data);
+    alert("Файл тарифов загружен. Он будет применяться для всех подключенных аккаунтов.");
+  } catch (error) {
+    tariffsStatus.textContent = error.message;
+    alert(error.message);
+  } finally {
+    uploadTariffsFileButton.disabled = false;
+    tariffsFileInput.value = "";
+  }
+}
+
+function renderTariffsPreview(data = null) {
+  if (!tariffsPreview) {
+    return;
+  }
+  const file = data?.file || null;
+  const rows = Array.isArray(data?.rows) ? data.rows : [];
+  if (!file) {
+    tariffsPreview.classList.remove("hidden");
+    tariffsPreview.innerHTML = `<div class="emptyState">Файл тарифов еще не загружен.</div>`;
+    return;
+  }
+  if (!rows.length) {
+    tariffsPreview.classList.remove("hidden");
+    const errorText = data?.error ? `<p>${escapeHtml(data.error)}</p>` : "";
+    tariffsPreview.innerHTML = `<div class="emptyState"><b>${escapeHtml(file.name || "Файл тарифов")}</b>${errorText}<p>В файле не найдено строк для просмотра.</p></div>`;
+    return;
+  }
+  const excelColumnName = (index) => {
+    let number = index + 1;
+    let name = "";
+    while (number > 0) {
+      const remainder = (number - 1) % 26;
+      name = String.fromCharCode(65 + remainder) + name;
+      number = Math.floor((number - 1) / 26);
+    }
+    return name;
+  };
+  const maxColumns = Math.max(...rows.map((row) => Array.isArray(row) ? row.length : 0));
+  const headerRows = rows.slice(0, 3);
+  const bodyRows = rows.slice(3);
+  const columnLetters = Array.from({ length: maxColumns }, (_, index) => `<th class="sheetColumnName">${excelColumnName(index)}</th>`).join("");
+  const buildCells = (row, tag) => Array.from({ length: maxColumns }, (_, index) => {
+    const value = Array.isArray(row) ? row[index] : "";
+    return `<${tag}>${escapeHtml(value)}</${tag}>`;
+  }).join("");
+  const headerHtml = headerRows.map((row, index) => `<tr><th class="sheetRowName">${index + 1}</th>${buildCells(row, "th")}</tr>`).join("");
+  const bodyHtml = bodyRows.map((row, index) => `<tr><th class="sheetRowName">${index + 1 + headerRows.length}</th>${buildCells(row, "td")}</tr>`).join("");
+  const limitedText = data?.limited ? "Показаны первые 200 строк." : `Показано строк: ${rows.length}.`;
+  tariffsPreview.classList.remove("hidden");
+  tariffsPreview.innerHTML = `
+    <div class="tariffsPreviewHeader">
+      <div>
+        <b>${escapeHtml(file.name || "Файл тарифов")}</b>
+        <span>${limitedText}</span>
+      </div>
+    </div>
+    <div class="tariffsTableWrap">
+      <table class="tariffsTable">
+        <thead><tr><th class="sheetCorner"></th>${columnLetters}</tr>${headerHtml}</thead>
+        <tbody>${bodyHtml}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+async function loadTariffsPreview() {
+  if (!tariffsPreview || !viewTariffsFileButton) {
+    return;
+  }
+  viewTariffsFileButton.disabled = true;
+  tariffsPreview.classList.remove("hidden");
+  tariffsPreview.innerHTML = `<div class="emptyState">Загружаю таблицу тарифов...</div>`;
+  try {
+    renderTariffsPreview(await api("/api/tariffs/preview"));
+  } catch (error) {
+    tariffsPreview.innerHTML = `<div class="emptyState">${escapeHtml(error.message)}</div>`;
+  } finally {
+    viewTariffsFileButton.disabled = false;
+  }
+}
+
 function formatPlainNumber(value) {
   if (value === "" || value === null || value === undefined) {
     return "-";
@@ -2645,6 +2987,45 @@ function loadSummaryRange(dateFrom, dateTo, mode = "custom") {
       period_mode: mode,
     }),
   });
+}
+
+function applyDefaultSummaryPeriods(periods) {
+  const current = periods?.current;
+  const compare = periods?.compare;
+  if (current?.from && current?.to) {
+    periodMode.value = "custom";
+    dateFromInput.value = current.from;
+    dateToInput.value = current.to;
+    syncPeriodButton();
+  }
+  if (compare?.from && compare?.to) {
+    compareDateFromInput.value = compare.from;
+    compareDateToInput.value = compare.to;
+    comparePeriodTouched = false;
+    if (hideComparisonInput) {
+      hideComparisonInput.checked = false;
+      syncComparisonVisibility();
+    }
+  }
+}
+
+async function loadDefaultDashboardSummary() {
+  if (!currentUser) {
+    return;
+  }
+  try {
+    setStatus("Загружаю вчерашний отчет из кэша...");
+    const data = await api("/api/default-summary");
+    applyDefaultSummaryPeriods(data.periods);
+    render(data.current, data.compare);
+    const cache = data.cache || {};
+    const suffix = cache.hit ? "из кэша" : "обновлен из Ozon и сохранен в кэш";
+    const current = data.periods?.current || {};
+    const compare = data.periods?.compare || {};
+    setStatus(`Готово. Период: ${formatShortRange(current)}. Сравнение: ${formatShortRange(compare)}. Отчет ${suffix}.`);
+  } catch (error) {
+    setStatus(error.message || "Не удалось загрузить вчерашний отчет.", true);
+  }
 }
 
 periodButton.addEventListener("click", (event) => {
@@ -2896,8 +3277,27 @@ userForm.addEventListener("submit", async (event) => {
 
 dashboardTab.addEventListener("click", () => switchTab("dashboard"));
 tnvedTab.addEventListener("click", () => switchTab("tnved"));
+unitTab.addEventListener("click", () => switchTab("unit"));
 cacheTab.addEventListener("click", () => switchTab("cache"));
+tariffsTab.addEventListener("click", () => switchTab("tariffs"));
 adminTab.addEventListener("click", () => switchTab("admin"));
+
+uploadTariffsFileButton?.addEventListener("click", () => {
+  tariffsFileInput.click();
+});
+
+viewTariffsFileButton?.addEventListener("click", () => {
+  loadTariffsPreview();
+});
+
+tariffsFileInput?.addEventListener("change", () => {
+  const file = tariffsFileInput.files?.[0];
+  if (file) {
+    uploadTariffsFile(file);
+  }
+});
+
+loadTariffsStatus();
 
 tnvedSearch.value = tnvedState.search;
 tnvedOnlyStock.checked = tnvedState.onlyStock;
