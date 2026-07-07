@@ -6,7 +6,7 @@
   "users": [
     {
       "login": "filkina-gramota3801",
-      "role": "user",
+      "role": "viewer",
       "password_hash": "pbkdf2_sha256$7b7652e85765ecf2e09a4f37a772d7a3$UfPPFd0EbtmS+elchhzmrOTgs4u+qBhrBgXgC9FfrfM=",
       "allowed_client_ids": [
         "3801"
@@ -16,7 +16,7 @@
   "accounts": [
     {
       "client_id": "3801",
-      "name": "Филькина Грамота",
+      "name": "\u0424\u0438\u043b\u044c\u043a\u0438\u043d\u0430 \u0413\u0440\u0430\u043c\u043e\u0442\u0430",
       "api_key": "5914cd4f-0abb-4790-a0ca-16107175d01b",
       "performance": {
         "client_id": "",
