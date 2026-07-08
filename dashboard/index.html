@@ -39,6 +39,7 @@
             <button id="unitTab" class="tabButton" type="button">Юнит</button>
             <button id="cacheTab" class="tabButton" type="button">Кэш</button>
             <button id="tariffsTab" class="tabButton" type="button">Тарифы</button>
+            <button id="apiTab" class="tabButton" type="button">API</button>
             <button id="adminTab" class="tabButton hidden" type="button">Админ панель</button>
           </nav>
           <div class="accountArea">
@@ -589,6 +590,20 @@
               <input id="tariffsFile" class="hidden" type="file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" />
             </div>
             <div id="tariffsPreview" class="tariffsPreview hidden"></div>
+          </section>
+        </section>
+
+        <section id="apiView" class="hidden">
+          <section class="panel apiPanel">
+            <div class="cacheHeader">
+              <div>
+                <h1>API</h1>
+                <p>Статусы Ozon endpoint по каждому Client ID. Здесь видны последние ответы и ошибки.</p>
+              </div>
+              <button id="apiRefresh" type="button">Обновить статус</button>
+            </div>
+            <div id="apiStatus" class="cacheStatus">Статусы API еще не проверены.</div>
+            <div id="apiRows" class="apiRows"></div>
           </section>
         </section>
       </section>

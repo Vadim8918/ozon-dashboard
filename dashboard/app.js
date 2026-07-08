@@ -47,11 +47,13 @@ const tnvedTab = document.querySelector("#tnvedTab");
 const unitTab = document.querySelector("#unitTab");
 const cacheTab = document.querySelector("#cacheTab");
 const tariffsTab = document.querySelector("#tariffsTab");
+const apiTab = document.querySelector("#apiTab");
 const adminTab = document.querySelector("#adminTab");
 const dashboardView = document.querySelector("#dashboardView");
 const tnvedView = document.querySelector("#tnvedView");
 const cacheView = document.querySelector("#cacheView");
 const tariffsView = document.querySelector("#tariffsView");
+const apiView = document.querySelector("#apiView");
 const adminView = document.querySelector("#adminView");
 const tnvedSearch = document.querySelector("#tnvedSearch");
 const tnvedOnlyStock = document.querySelector("#tnvedOnlyStock");
@@ -65,6 +67,9 @@ const columnsDropdown = document.querySelector("#columnsDropdown");
 const cacheRefresh = document.querySelector("#cacheRefresh");
 const cacheStatus = document.querySelector("#cacheStatus");
 const cacheRows = document.querySelector("#cacheRows");
+const apiRefresh = document.querySelector("#apiRefresh");
+const apiStatus = document.querySelector("#apiStatus");
+const apiRows = document.querySelector("#apiRows");
 
 let currentUser = null;
 let currentAccount = null;
@@ -75,10 +80,12 @@ let tnvedTimer = null;
 let tnvedLastDuration = null;
 let activeProductsTab = "tnved";
 let cacheLoadedOnce = false;
+let apiLoadedOnce = false;
 let lastSummaryData = null;
 let lastCompareData = null;
 let comparePeriodTouched = false;
 let periodCloseTimer = null;
+let monthCacheLoadToken = 0;
 const TNVED_STATE_KEY = "ozonTnvedStateV4";
 const DAILY_CARD_STATE_KEY = "ozonDailyCardsHiddenV1";
 const DAILY_CARD_ORDER_KEY = "ozonDailyCardsOrderV1";
@@ -915,6 +922,7 @@ function selectMonthPeriod(from, to) {
   syncPeriodButton();
   setDefaultComparePeriod(true);
   closePeriodMenu();
+  loadSelectedMonthFromCache();
 }
 
 function setText(id, value) {
@@ -1031,6 +1039,7 @@ async function switchAccount(clientId) {
   tnvedItems = [];
   tnvedLoadedOnce = false;
   cacheLoadedOnce = false;
+  apiLoadedOnce = false;
   tnvedMeta.textContent = "Товары еще не загружены.";
   if (!tnvedView.classList.contains("hidden")) {
     loadTnvedProducts();
@@ -1050,17 +1059,20 @@ function switchTab(tab) {
   const isTnved = tab === "tnved" || tab === "unit";
   const isCache = tab === "cache";
   const isTariffs = tab === "tariffs";
+  const isApi = tab === "api";
   const isAdmin = tab === "admin";
   dashboardTab.classList.toggle("active", tab === "dashboard");
   tnvedTab.classList.toggle("active", tab === "tnved");
   unitTab.classList.toggle("active", tab === "unit");
   cacheTab.classList.toggle("active", isCache);
   tariffsTab.classList.toggle("active", isTariffs);
+  apiTab.classList.toggle("active", isApi);
   adminTab.classList.toggle("active", isAdmin);
   dashboardView.classList.toggle("hidden", tab !== "dashboard");
   tnvedView.classList.toggle("hidden", !isTnved);
   cacheView.classList.toggle("hidden", !isCache);
   tariffsView.classList.toggle("hidden", !isTariffs);
+  apiView.classList.toggle("hidden", !isApi);
   adminView.classList.toggle("hidden", !isAdmin);
   localStorage.setItem("ozonActiveTab", tab);
   if (isTnved) {
@@ -1074,6 +1086,9 @@ function switchTab(tab) {
   }
   if (isCache && !cacheLoadedOnce) {
     loadCacheStatus();
+  }
+  if (isApi && !apiLoadedOnce) {
+    loadApiStatus();
   }
   if (isAdmin && canManageAdmin(currentUser)) {
     loadAdmin();
@@ -1101,6 +1116,7 @@ function showLogin() {
   currentAccount = null;
   ozonAccounts = [];
   cacheLoadedOnce = false;
+  apiLoadedOnce = false;
   accountDropdown.classList.add("hidden");
   appView.classList.add("hidden");
   loginView.classList.remove("hidden");
@@ -2136,7 +2152,7 @@ async function loadCacheStatus(options = {}) {
     cacheLoadedOnce = true;
     const productMinutes = Math.round((data.ttl_seconds || 300) / 60);
     const reportMinutes = Math.round((data.report_ttl_seconds || 1800) / 60);
-    cacheStatus.textContent = `Кэш по товарам хранится отдельно для каждого Client ID. Кэш отчетов за вчера и сравнение тоже отдельный для каждого ID, обновление: каждые ${reportMinutes} мин.`;
+    cacheStatus.textContent = `Кэш по товарам хранится отдельно для каждого Client ID. Кэш отчетов за вчера обновляется каждые ${reportMinutes} мин. Период 06.07 хранится отдельно для каждого ID и обновляется по расписанию.`;
     cacheRows.innerHTML = "";
     const productTitle = document.createElement("div");
     productTitle.className = "cacheSectionTitle";
@@ -2182,11 +2198,21 @@ async function loadCacheStatus(options = {}) {
       row.className = "cacheRow reportCacheRow";
       const current = item.current_period || {};
       const compare = item.compare_period || {};
-      const state = !item.has_cache ? "Кэша еще нет" : item.stale ? "Ожидает обновления" : "Свежий";
+      const state = item.stopped
+        ? "На стопе"
+        : item.refreshing
+          ? "Обновляется"
+          : !item.has_cache
+            ? "Кэша еще нет"
+            : item.stale
+              ? "Ожидает обновления"
+              : "Свежий";
+      const nextUpdateAt = item.stopped ? "" : (item.expires_at || item.next_attempt_at || "");
+      const cacheKind = item.cache_kind === "period" ? "Выбранный период" : "Вчерашний отчет";
       row.innerHTML = `
         <div>
           <strong>${escapeHtml(item.name || "Ozon аккаунт")}</strong>
-          <span>ID ${escapeHtml(item.client_id)}</span>
+          <span>ID ${escapeHtml(item.client_id)} · ${cacheKind}</span>
         </div>
         <div>
           <span class="small">Период</span>
@@ -2202,9 +2228,9 @@ async function loadCacheStatus(options = {}) {
         </div>
         <div>
           <span class="small">Следующее</span>
-          <strong>${item.expires_at ? formatDateTime(item.expires_at) : "-"}</strong>
+          <strong>${nextUpdateAt ? formatDateTime(nextUpdateAt) : "-"}</strong>
         </div>
-        <div class="cacheState ${item.stale ? "stale" : item.has_cache ? "fresh" : ""}">${state}</div>
+        <div class="cacheState ${item.stopped ? "stale" : item.refreshing ? "loading" : item.stale ? "stale" : item.has_cache ? "fresh" : ""}">${state}</div>
       `;
       cacheRows.appendChild(row);
     });
@@ -2214,6 +2240,83 @@ async function loadCacheStatus(options = {}) {
   } catch (error) {
     cacheStatus.textContent = error.message;
     cacheStatus.classList.add("errorText");
+  }
+}
+
+function explainApiMessage(item) {
+  const text = `${item.message || ""}`.toLowerCase();
+  if (String(item.status || "") === "429" || text.includes("requests limit exceeded") || text.includes("parallel requests")) {
+    return "Ozon временно ограничил запросы: для этого Seller ID нельзя запускать параллельные запросы. Нужна последовательная очередь, пауза 2-5 секунд между тяжелыми запросами и без пачки месячных обновлений одновременно.";
+  }
+  if (text.includes("max_offset_exceeded")) {
+    return "Слишком большой объем выдачи для одного запроса. Период нужно дробить на меньшие части.";
+  }
+  if (String(item.status || "") === "400") {
+    return "Ozon отклонил параметры запроса. Обычно это слишком длинный период или неверный формат фильтра.";
+  }
+  return item.hint || "";
+}
+
+async function loadApiStatus(options = {}) {
+  if (!apiStatus || !apiRows) {
+    return;
+  }
+  if (!options.silent) {
+    apiStatus.textContent = "Проверяю статусы Ozon API...";
+  }
+  try {
+    const data = await api("/api/ozon-endpoints");
+    apiLoadedOnce = true;
+    const items = data.items || [];
+    const errorCount = items.filter((item) => item.ok === false).length;
+    apiStatus.textContent = errorCount
+      ? `Найдено ошибок: ${errorCount}. При 429 запросы надо выполнять по одному для каждого Seller ID.`
+      : "Ошибок по последним обращениям не найдено.";
+    apiRows.innerHTML = `
+      <div class="apiTableWrap">
+        <table class="apiTable">
+          <thead>
+            <tr>
+              <th>Аккаунт</th>
+              <th>Endpoint</th>
+              <th>Статус</th>
+              <th>Последний ответ</th>
+              <th>Когда</th>
+              <th>Что значит</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map((item) => {
+              const stateClass = item.ok === true ? "fresh" : item.ok === false ? "stale" : "";
+              const state = item.ok === true ? "OK" : item.ok === false ? `Ошибка ${item.status || ""}`.trim() : "Нет данных";
+              const message = item.message || (item.ok === true ? "OK" : "-");
+              return `
+                <tr>
+                  <td>
+                    <strong>${escapeHtml(item.account_name || "Ozon аккаунт")}</strong>
+                    <span>ID ${escapeHtml(item.client_id || "")}</span>
+                  </td>
+                  <td>
+                    <strong>${escapeHtml(item.name || item.path || "")}</strong>
+                    <code>${escapeHtml(item.path || "")}</code>
+                  </td>
+                  <td><span class="cacheState ${stateClass}">${escapeHtml(state)}</span></td>
+                  <td class="apiMessage">${escapeHtml(message)}</td>
+                  <td>${item.updated_at ? formatDateTime(item.updated_at) : "-"}</td>
+                  <td class="apiHint">${escapeHtml(explainApiMessage(item))}</td>
+                </tr>
+              `;
+            }).join("")}
+          </tbody>
+        </table>
+      </div>
+    `;
+    if (!items.length) {
+      apiRows.innerHTML = '<div class="small">Нет доступных аккаунтов для проверки API.</div>';
+    }
+  } catch (error) {
+    apiStatus.textContent = error.message;
+    apiStatus.classList.add("errorText");
   }
 }
 
@@ -2989,6 +3092,56 @@ function loadSummaryRange(dateFrom, dateTo, mode = "custom") {
   });
 }
 
+function loadCachedSummaryPair(dateFrom, dateTo, compareDateFrom = "", compareDateTo = "") {
+  return api("/api/summary-cached", {
+    method: "POST",
+    body: JSON.stringify({
+      date_from: dateFrom,
+      date_to: dateTo,
+      compare_date_from: compareDateFrom,
+      compare_date_to: compareDateTo,
+    }),
+  });
+}
+
+async function loadSelectedMonthFromCache() {
+  if (!currentUser || periodMode.value !== "month") {
+    return;
+  }
+  const token = ++monthCacheLoadToken;
+  const button = summaryForm.querySelector('button[type="submit"]');
+  if (button) {
+    button.disabled = true;
+  }
+  try {
+    setStatus("Проверяю кэш выбранного месяца...");
+    const data = await loadCachedSummaryPair(
+      dateFromInput.value,
+      dateToInput.value,
+      comparisonHidden() ? "" : compareDateFromInput.value,
+      comparisonHidden() ? "" : compareDateToInput.value,
+    );
+    if (token !== monthCacheLoadToken) {
+      return;
+    }
+    render(data.current, data.compare);
+    const cache = data.cache || {};
+    const suffix = cache.hit ? "из кэша" : "обновлен из Ozon и сохранен в кэш";
+    const current = data.periods?.current || {};
+    const compare = data.periods?.compare || {};
+    const compareText = comparisonHidden() ? "" : ` Сравнение: ${formatShortRange(compare)}.`;
+    setStatus(`Готово. Период: ${formatShortRange(current)}.${compareText} Отчет ${suffix}.`);
+  } catch (error) {
+    if (token === monthCacheLoadToken) {
+      setStatus(error.message || "Не удалось загрузить выбранный месяц.", true);
+    }
+  } finally {
+    if (token === monthCacheLoadToken && button) {
+      button.disabled = false;
+    }
+  }
+}
+
 function applyDefaultSummaryPeriods(periods) {
   const current = periods?.current;
   const compare = periods?.compare;
@@ -3136,12 +3289,15 @@ summaryForm.addEventListener("submit", async (event) => {
     setStatus(comparisonHidden()
       ? "Загружаю основной период из Ozon..."
       : "Загружаю основной период и сравнение из Ozon...");
-    const dataPromise = loadSummaryRange(dateFromInput.value, dateToInput.value, periodMode.value);
-    const comparePromise = comparisonHidden()
-      ? Promise.resolve(null)
-      : loadSummaryRange(compareDateFromInput.value, compareDateToInput.value, "custom");
-    const [data, compareData] = await Promise.all([dataPromise, comparePromise]);
-    render(data, compareData);
+    const current = await loadSummaryRange(dateFromInput.value, dateToInput.value, periodMode.value);
+    const compare = comparisonHidden()
+      ? null
+      : await loadSummaryRange(compareDateFromInput.value, compareDateToInput.value, "comparison");
+    render(current, compare);
+    const compareText = comparisonHidden() ? "" : ` Сравнение: ${formatShortRange(compare?.period)}.`;
+    const currentSource = current?.cache?.hit ? "из кэша" : "из Ozon";
+    const compareSource = comparisonHidden() ? "" : (compare?.cache?.hit ? ", сравнение из кэша" : ", сравнение из Ozon");
+    setStatus(`Готово. Период: ${formatShortRange(current?.period)}.${compareText} Отчет загружен ${currentSource}${compareSource}.`);
   } catch (error) {
     setStatus(error.message, true);
   } finally {
@@ -3280,6 +3436,7 @@ tnvedTab.addEventListener("click", () => switchTab("tnved"));
 unitTab.addEventListener("click", () => switchTab("unit"));
 cacheTab.addEventListener("click", () => switchTab("cache"));
 tariffsTab.addEventListener("click", () => switchTab("tariffs"));
+apiTab.addEventListener("click", () => switchTab("api"));
 adminTab.addEventListener("click", () => switchTab("admin"));
 
 uploadTariffsFileButton?.addEventListener("click", () => {
@@ -3311,6 +3468,7 @@ tnvedOnlyStock.addEventListener("change", () => {
 });
 tnvedRefresh.addEventListener("click", () => loadTnvedProducts({ force: true }));
 cacheRefresh.addEventListener("click", () => loadCacheStatus());
+apiRefresh?.addEventListener("click", () => loadApiStatus());
 columnsButton.addEventListener("click", (event) => {
   event.stopPropagation();
   columnsDropdown.classList.toggle("hidden");

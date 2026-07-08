@@ -8,6 +8,7 @@ import os
 import secrets
 import sys
 import threading
+import time
 import io
 import zipfile
 from datetime import date, datetime, timedelta, timezone
@@ -28,6 +29,7 @@ CONFIG_PATH = APP_DIR / "dashboard_config.json"
 CACHE_DIR = APP_DIR / "cache"
 TARIFFS_DIR = CACHE_DIR / "tariff_files"
 TARIFFS_META_PATH = CACHE_DIR / "tariffs_meta.json"
+API_STATUS_PATH = CACHE_DIR / "api_status.json"
 SESSION_SECRET = secrets.token_bytes(32)
 ADMIN_ROLES = {"owner", "admin"}
 TNVED_CACHE_TTL_SECONDS = 5 * 60
@@ -37,6 +39,37 @@ APP_TZ = timezone(timedelta(hours=3))
 TNVED_CACHE: dict[str, dict[str, Any]] = {}
 TNVED_CACHE_LOCK = threading.Lock()
 TNVED_REFRESHING: set[str] = set()
+TNVED_SCHEDULER_INTERVAL_SECONDS = 30
+TNVED_RETRY_SECONDS = 5 * 60
+TNVED_RETRY_AFTER: dict[str, datetime] = {}
+REPORT_CACHE_REFRESHING: set[str] = set()
+REPORT_CACHE_REFRESH_STARTED: dict[str, datetime] = {}
+REPORT_BUILD_LOCK = threading.Lock()
+DEFAULT_REPORT_SCHEDULER_INTERVAL_SECONDS = 30
+DEFAULT_REPORT_RETRY_SECONDS = 5 * 60
+DEFAULT_REPORT_RETRY_AFTER: dict[str, datetime] = {}
+FINANCE_TRANSACTION_MIN_INTERVAL_SECONDS = 1
+FINANCE_TRANSACTION_LOCKS: dict[str, threading.Lock] = {}
+FINANCE_TRANSACTION_LOCKS_LOCK = threading.Lock()
+FINANCE_TRANSACTION_LAST_CALL: dict[str, float] = {}
+API_STATUS_LOCK = threading.Lock()
+OZON_ENDPOINTS = [
+    {
+        "path": "/v3/finance/transaction/list",
+        "name": "Финансовые операции",
+        "hint": "Тяжелый endpoint. При 429 не запускать параллельно для одного Seller ID; держать последовательную очередь и паузу 2-5 секунд между тяжелыми запросами.",
+    },
+    {"path": "/v1/finance/realization/by-day", "name": "Начисления за день", "hint": "Используется для выручки, программ партнеров и баллов за скидки по свежим дням."},
+    {"path": "/v2/finance/realization", "name": "Начисления за месяц", "hint": "Используется для месячной выручки, программ партнеров и баллов за скидки."},
+    {"path": "/v2/posting/fbo/list", "name": "Заказы FBO", "hint": "Для больших периодов Ozon может вернуть MAX_OFFSET_EXCEEDED; лучше дробить период."},
+    {"path": "/v3/posting/fbs/list", "name": "Заказы FBS", "hint": "Заказы FBS по выбранному периоду."},
+    {"path": "/v3/product/list", "name": "Список товаров", "hint": "Кэш товаров обновляется отдельно."},
+    {"path": "/v3/product/info/list", "name": "Информация о товарах", "hint": "Детальные данные по товарам пачками."},
+    {"path": "/v5/product/info/prices", "name": "Цены товаров", "hint": "Цены и скидки по товарам пачками."},
+    {"path": "/v4/product/info/stocks", "name": "Остатки товаров", "hint": "Остатки FBO/FBS по товарам."},
+    {"path": "/v4/product/info/attributes", "name": "Атрибуты товаров", "hint": "Категории, типы, ТНВЭД и свойства товаров."},
+    {"path": "/v1/description-category/tree", "name": "Дерево категорий", "hint": "Справочник категорий Ozon."},
+]
 
 
 def password_hash(password: str, salt: str | None = None) -> str:
@@ -228,6 +261,85 @@ def mask_secret(value: str, visible_start: int = 4, visible_end: int = 4) -> str
     return f"{value[:visible_start]}{'*' * (len(value) - visible_start - visible_end)}{value[-visible_end:]}"
 
 
+def load_api_statuses() -> dict[str, Any]:
+    if not API_STATUS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(API_STATUS_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_api_statuses(data: dict[str, Any]) -> None:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        API_STATUS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError:
+        return
+
+
+def record_api_status(
+    client_id: str,
+    path: str,
+    *,
+    status: int | None,
+    ok: bool,
+    message: str = "",
+) -> None:
+    now = datetime.now(timezone.utc).isoformat()
+    with API_STATUS_LOCK:
+        data = load_api_statuses()
+        client_key = str(client_id or "").strip() or "unknown"
+        client_data = data.setdefault(client_key, {})
+        previous = client_data.get(path) if isinstance(client_data.get(path), dict) else {}
+        error_count = int(previous.get("error_count") or 0)
+        success_count = int(previous.get("success_count") or 0)
+        if ok:
+            success_count += 1
+            error_count = 0
+        else:
+            error_count += 1
+        client_data[path] = {
+            "path": path,
+            "status": status,
+            "ok": ok,
+            "message": str(message or "")[:1000],
+            "updated_at": now,
+            "success_count": success_count,
+            "error_count": error_count,
+        }
+        save_api_statuses(data)
+
+
+def api_status_payload(accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    statuses = load_api_statuses()
+    endpoint_by_path = {item["path"]: item for item in OZON_ENDPOINTS}
+    rows: list[dict[str, Any]] = []
+    for account in accounts:
+        client_id = str(account.get("client_id", "")).strip()
+        account_statuses = statuses.get(client_id, {}) if isinstance(statuses.get(client_id), dict) else {}
+        for endpoint in OZON_ENDPOINTS:
+            path = endpoint["path"]
+            stored = account_statuses.get(path) if isinstance(account_statuses.get(path), dict) else {}
+            rows.append(
+                {
+                    "client_id": client_id,
+                    "account_name": str(account.get("name") or default_account_name(client_id)),
+                    "path": path,
+                    "name": endpoint_by_path[path]["name"],
+                    "hint": endpoint_by_path[path]["hint"],
+                    "status": stored.get("status"),
+                    "ok": bool(stored.get("ok")) if stored else None,
+                    "message": str(stored.get("message") or ""),
+                    "updated_at": str(stored.get("updated_at") or ""),
+                    "success_count": int(stored.get("success_count") or 0),
+                    "error_count": int(stored.get("error_count") or 0),
+                }
+            )
+    return {"items": rows}
+
+
 def public_user(user: dict[str, Any], client_id: str | None = None) -> dict[str, str]:
     result = {"login": user["login"], "role": user["role"]}
     if client_id:
@@ -281,49 +393,85 @@ def read_session(cookie_header: str | None) -> dict[str, str] | None:
         return None
 
 
+def finance_transaction_lock(client_id: str) -> threading.Lock:
+    client_key = str(client_id or "").strip() or "unknown"
+    with FINANCE_TRANSACTION_LOCKS_LOCK:
+        lock = FINANCE_TRANSACTION_LOCKS.get(client_key)
+        if lock is None:
+            lock = threading.Lock()
+            FINANCE_TRANSACTION_LOCKS[client_key] = lock
+        return lock
+
+
+def wait_before_finance_transaction_request(client_id: str) -> None:
+    client_key = str(client_id or "").strip() or "unknown"
+    last_call = FINANCE_TRANSACTION_LAST_CALL.get(client_key, 0.0)
+    wait_seconds = last_call + FINANCE_TRANSACTION_MIN_INTERVAL_SECONDS - time.monotonic()
+    if wait_seconds > 0:
+        time.sleep(wait_seconds)
+
+
+def mark_finance_transaction_request(client_id: str) -> None:
+    client_key = str(client_id or "").strip() or "unknown"
+    FINANCE_TRANSACTION_LAST_CALL[client_key] = time.monotonic()
+
+
 class OzonDashboardClient:
     def __init__(self, client_id: str, api_key: str) -> None:
+        self.client_id = client_id.strip()
         self.session = requests.Session()
         self.session.headers.update(
             {
-                "Client-Id": client_id.strip(),
+                "Client-Id": self.client_id,
                 "Api-Key": api_key.strip(),
                 "Content-Type": "application/json",
             }
         )
 
     def post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        response = self.session.post(f"{BASE_URL}{path}", json=payload, timeout=30)
+        try:
+            response = self.session.post(f"{BASE_URL}{path}", json=payload, timeout=30)
+        except Exception as exc:
+            record_api_status(self.client_id, path, status=None, ok=False, message=str(exc))
+            raise
         if response.status_code >= 400:
-            raise RuntimeError(f"{path}: HTTP {response.status_code}: {response.text}")
+            message = response.text
+            record_api_status(self.client_id, path, status=response.status_code, ok=False, message=message)
+            raise RuntimeError(f"{path}: HTTP {response.status_code}: {message}")
+        record_api_status(self.client_id, path, status=response.status_code, ok=True, message="OK")
         return response.json()
 
     def finance_transactions(self, date_from: str, date_to: str) -> list[dict[str, Any]]:
         operations: list[dict[str, Any]] = []
         page = 1
 
-        while True:
-            data = self.post(
-                "/v3/finance/transaction/list",
-                {
-                    "filter": {
-                        "date": {"from": date_from, "to": date_to},
-                        "operation_type": [],
-                        "posting_number": "",
-                        "transaction_type": "all",
-                    },
-                    "page": page,
-                    "page_size": 1000,
-                },
-            )
-            result = data.get("result") or {}
-            items = result.get("operations") or []
-            operations.extend(items)
+        with finance_transaction_lock(self.client_id):
+            while True:
+                wait_before_finance_transaction_request(self.client_id)
+                try:
+                    data = self.post(
+                        "/v3/finance/transaction/list",
+                        {
+                            "filter": {
+                                "date": {"from": date_from, "to": date_to},
+                                "operation_type": [],
+                                "posting_number": "",
+                                "transaction_type": "all",
+                            },
+                            "page": page,
+                            "page_size": 1000,
+                        },
+                    )
+                finally:
+                    mark_finance_transaction_request(self.client_id)
+                result = data.get("result") or {}
+                items = result.get("operations") or []
+                operations.extend(items)
 
-            page_count = int(result.get("page_count") or 0)
-            if not items or page >= page_count:
-                break
-            page += 1
+                page_count = int(result.get("page_count") or 0)
+                if not items or page >= page_count:
+                    break
+                page += 1
 
         return operations
 
@@ -2273,7 +2421,10 @@ def write_tnved_cache_record(client_id: str, api_key: str, payload: dict[str, An
         "expires_at": expires_at.isoformat(),
         "payload": payload,
     }
-    tnved_cache_file(client_id).write_text(json.dumps(disk_record, ensure_ascii=False), encoding="utf-8")
+    try:
+        tnved_cache_file(client_id).write_text(json.dumps(disk_record, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
     return record
 
 
@@ -2299,6 +2450,10 @@ def refresh_tnved_cache(client_id: str, api_key: str) -> None:
     try:
         payload = build_tnved_products_uncached(client_id)
         write_tnved_cache_record(client_id, api_key, payload)
+        TNVED_RETRY_AFTER.pop(client_id, None)
+    except Exception as exc:
+        TNVED_RETRY_AFTER[client_id] = datetime.now(timezone.utc) + timedelta(seconds=TNVED_RETRY_SECONDS)
+        print(f"Product cache refresh failed for {client_id}: {exc}")
     finally:
         with TNVED_CACHE_LOCK:
             TNVED_REFRESHING.discard(client_id)
@@ -2312,6 +2467,52 @@ def start_tnved_background_refresh(client_id: str, api_key: str) -> bool:
     thread = threading.Thread(target=refresh_tnved_cache, args=(client_id, api_key), daemon=True)
     thread.start()
     return True
+
+
+def account_tnved_cache_is_due(account: dict[str, Any], now: datetime) -> bool:
+    client_id = str(account.get("client_id", "")).strip()
+    api_key = str(account.get("api_key", ""))
+    if not client_id or not api_key:
+        return False
+    with TNVED_CACHE_LOCK:
+        if client_id in TNVED_REFRESHING:
+            return False
+    retry_after = TNVED_RETRY_AFTER.get(client_id)
+    if retry_after and retry_after > now:
+        return False
+    record = read_tnved_cache_record(client_id, api_key)
+    if not record:
+        return True
+    return parse_iso_datetime(record.get("expires_at")) <= now
+
+
+def run_tnved_scheduler_once() -> None:
+    now = datetime.now(timezone.utc)
+    try:
+        config = load_config()
+    except Exception as exc:
+        print(f"Product cache scheduler cannot read config: {exc}")
+        return
+    for account in config.get("accounts", []):
+        if not isinstance(account, dict):
+            continue
+        if not account_tnved_cache_is_due(account, now):
+            continue
+        client_id = str(account.get("client_id", "")).strip()
+        api_key = str(account.get("api_key", ""))
+        start_tnved_background_refresh(client_id, api_key)
+
+
+def start_tnved_scheduler() -> None:
+    def worker() -> None:
+        while True:
+            try:
+                run_tnved_scheduler_once()
+            except Exception as exc:
+                print(f"Product cache scheduler error: {exc}")
+            time.sleep(TNVED_SCHEDULER_INTERVAL_SECONDS)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def empty_tnved_loading_payload(client_id: str, account_name: str, refresh_started: bool) -> dict[str, Any]:
@@ -2357,6 +2558,50 @@ def report_cache_file(client_id: str) -> Path:
     return CACHE_DIR / f"report_{safe_client_id}.json"
 
 
+def report_period_cache_file(client_id: str, periods: dict[str, dict[str, str]]) -> Path:
+    safe_client_id = re.sub(r"[^0-9A-Za-z_-]+", "_", client_id or "default")
+    return CACHE_DIR / f"report_{safe_client_id}_{report_period_cache_key(periods)}.json"
+
+
+def report_period_cache_key(periods: dict[str, dict[str, str]]) -> str:
+    cache_key = json.dumps(periods, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(cache_key.encode("utf-8")).hexdigest()[:16]
+
+
+def month_start(year: int, month: int) -> date:
+    return date(year, month, 1)
+
+
+def shift_month(month_date: date, offset: int) -> date:
+    month_index = month_date.year * 12 + month_date.month - 1 + offset
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def month_period(month_date: date) -> dict[str, str]:
+    end = shift_month(month_date, 1) - timedelta(days=1)
+    return {
+        "from": month_date.isoformat(),
+        "to": end.isoformat(),
+        "label": f"{month_date.isoformat()} - {end.isoformat()}",
+    }
+
+
+def closed_month_report_periods(limit: int = 12) -> list[dict[str, dict[str, str]]]:
+    today = datetime.now(APP_TZ).date()
+    current_month = month_start(today.year, today.month)
+    periods = []
+    for offset in range(1, limit + 1):
+        current_month_start = shift_month(current_month, -offset)
+        compare_month_start = shift_month(current_month_start, -1)
+        periods.append(
+            {
+                "current": month_period(current_month_start),
+                "compare": month_period(compare_month_start),
+            }
+        )
+    return periods
+
+
 def default_report_periods() -> dict[str, dict[str, str]]:
     today = datetime.now(APP_TZ).date()
     current_day = today - timedelta(days=1)
@@ -2375,6 +2620,82 @@ def default_report_periods() -> dict[str, dict[str, str]]:
     }
 
 
+def fixed_day_report_periods() -> dict[str, dict[str, str]]:
+    return {
+        "current": {
+            "from": "2026-07-07",
+            "to": "2026-07-07",
+            "label": "2026-07-07",
+        }
+    }
+
+
+def next_default_report_update_after(moment_utc: datetime) -> datetime:
+    local = moment_utc.astimezone(APP_TZ)
+    first_update = local.replace(hour=11, minute=30, second=0, microsecond=0)
+    if local < first_update:
+        return first_update.astimezone(timezone.utc)
+    candidate = local.replace(minute=30, second=0, microsecond=0)
+    if candidate <= local:
+        candidate += timedelta(hours=1)
+    return candidate.astimezone(timezone.utc)
+
+
+def next_fixed_day_report_update_after(moment_utc: datetime) -> datetime:
+    local = moment_utc.astimezone(APP_TZ)
+    first_update = local.replace(hour=20, minute=30, second=30, microsecond=0)
+    if local < first_update:
+        return first_update.astimezone(timezone.utc)
+    minute = 0 if local.minute < 30 or (local.minute == 30 and local.second < 30) else 30
+    candidate = local.replace(minute=minute, second=30, microsecond=0)
+    if candidate <= local:
+        candidate += timedelta(minutes=30)
+    return candidate.astimezone(timezone.utc)
+
+
+def first_fixed_day_report_update_for_day(moment_utc: datetime) -> datetime:
+    local = moment_utc.astimezone(APP_TZ)
+    return local.replace(hour=20, minute=30, second=30, microsecond=0).astimezone(timezone.utc)
+
+
+def next_month_report_update_after(moment_utc: datetime) -> datetime:
+    local = moment_utc.astimezone(APP_TZ)
+    first_update = local.replace(hour=11, minute=20, second=0, microsecond=0)
+    if local < first_update:
+        return first_update.astimezone(timezone.utc)
+    minute = 20 if local.minute < 50 else 50
+    candidate = local.replace(minute=minute, second=0, microsecond=0)
+    if candidate <= local:
+        candidate += timedelta(minutes=30)
+    return candidate.astimezone(timezone.utc)
+
+
+def first_month_report_update_for_day(moment_utc: datetime) -> datetime:
+    local = moment_utc.astimezone(APP_TZ)
+    return local.replace(hour=11, minute=20, second=0, microsecond=0).astimezone(timezone.utc)
+
+
+def summary_has_blocking_finance_error(summary: Any) -> bool:
+    if not isinstance(summary, dict):
+        return False
+    errors = summary.get("errors") or []
+    if not isinstance(errors, list):
+        return False
+    for error in errors:
+        text = str(error)
+        if "/v3/finance/transaction/list" in text or "HTTP 429" in text or "requests limit exceeded" in text:
+            return True
+    return False
+
+
+def report_record_has_blocking_errors(record: dict[str, Any]) -> bool:
+    if summary_has_blocking_finance_error(record.get("current")):
+        return True
+    if summary_has_blocking_finance_error(record.get("compare")):
+        return True
+    return False
+
+
 def read_report_cache_record(client_id: str, api_key: str) -> dict[str, Any] | None:
     path = report_cache_file(client_id)
     if not path.exists():
@@ -2389,7 +2710,82 @@ def read_report_cache_record(client_id: str, api_key: str) -> dict[str, Any] | N
         return None
     if not isinstance(record.get("current"), dict) or not isinstance(record.get("compare"), dict):
         return None
+    if report_record_has_blocking_errors(record):
+        return None
+    updated_at = parse_iso_datetime(record.get("updated_at"))
+    record["expires_at"] = next_default_report_update_after(updated_at).isoformat()
     return record
+
+
+def read_report_period_cache_record(client_id: str, api_key: str, periods: dict[str, dict[str, str]]) -> dict[str, Any] | None:
+    path = report_period_cache_file(client_id, periods)
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if record.get("api_key_fingerprint") != api_key_fingerprint(api_key):
+        return None
+    if record.get("cache_version") != REPORT_CACHE_VERSION:
+        return None
+    if record.get("periods") != periods:
+        return None
+    if not isinstance(record.get("current"), dict):
+        return None
+    compare = record.get("compare")
+    if compare is not None and not isinstance(compare, dict):
+        return None
+    if report_record_has_blocking_errors(record):
+        return None
+    return record
+
+
+def period_dates_equal(saved_period: Any, expected_period: dict[str, str] | None) -> bool:
+    if not isinstance(saved_period, dict) or not isinstance(expected_period, dict):
+        return False
+    return (
+        str(saved_period.get("from") or "")[:10] == str(expected_period.get("from") or "")[:10]
+        and str(saved_period.get("to") or "")[:10] == str(expected_period.get("to") or "")[:10]
+    )
+
+
+def report_period_dates_match(saved_periods: Any, expected_periods: dict[str, dict[str, str]]) -> bool:
+    if not isinstance(saved_periods, dict):
+        return False
+    if not period_dates_equal(saved_periods.get("current"), expected_periods.get("current")):
+        return False
+    expected_compare = expected_periods.get("compare")
+    if expected_compare:
+        return period_dates_equal(saved_periods.get("compare"), expected_compare)
+    return not saved_periods.get("compare")
+
+
+def read_report_period_cache_record_by_dates(client_id: str, api_key: str, periods: dict[str, dict[str, str]]) -> dict[str, Any] | None:
+    record = read_report_period_cache_record(client_id, api_key, periods)
+    if record:
+        return record
+
+    safe_client_id = re.sub(r"[^0-9A-Za-z_-]+", "_", client_id or "default")
+    for path in CACHE_DIR.glob(f"report_{safe_client_id}_*.json"):
+        try:
+            candidate = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if candidate.get("api_key_fingerprint") != api_key_fingerprint(api_key):
+            continue
+        if candidate.get("cache_version") != REPORT_CACHE_VERSION:
+            continue
+        if not isinstance(candidate.get("current"), dict):
+            continue
+        compare = candidate.get("compare")
+        if compare is not None and not isinstance(compare, dict):
+            continue
+        if report_record_has_blocking_errors(candidate):
+            continue
+        if report_period_dates_match(candidate.get("periods"), periods):
+            return candidate
+    return None
 
 
 def write_report_cache_record(
@@ -2401,7 +2797,7 @@ def write_report_cache_record(
 ) -> dict[str, Any]:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     now = datetime.now(timezone.utc)
-    expires_at = now + timedelta(seconds=REPORT_CACHE_TTL_SECONDS)
+    expires_at = next_default_report_update_after(now)
     record = {
         "cache_version": REPORT_CACHE_VERSION,
         "api_key_fingerprint": api_key_fingerprint(api_key),
@@ -2411,7 +2807,36 @@ def write_report_cache_record(
         "current": current_summary,
         "compare": compare_summary,
     }
-    report_cache_file(client_id).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    try:
+        report_cache_file(client_id).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+    return record
+
+
+def write_report_period_cache_record(
+    client_id: str,
+    api_key: str,
+    periods: dict[str, dict[str, str]],
+    current_summary: dict[str, Any],
+    compare_summary: dict[str, Any] | None,
+) -> dict[str, Any]:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc)
+    expires_at = next_month_report_update_after(now)
+    record = {
+        "cache_version": REPORT_CACHE_VERSION,
+        "api_key_fingerprint": api_key_fingerprint(api_key),
+        "updated_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "periods": periods,
+        "current": current_summary,
+        "compare": compare_summary,
+    }
+    try:
+        report_period_cache_file(client_id, periods).write_text(json.dumps(record, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
     return record
 
 
@@ -2516,6 +2941,28 @@ def report_cache_response(record: dict[str, Any], *, hit: bool) -> dict[str, Any
     }
 
 
+def build_summary_with_period_cache(date_from: str, date_to: str, client_id: str | None = None, period_label: str = "") -> dict[str, Any]:
+    selected_client_id, api_key, _account_name = get_ozon_credentials(client_id)
+    if selected_client_id and api_key:
+        current_period = normalize_report_period(date_from[:10], date_to[:10])
+        if period_label:
+            current_period["label"] = period_label
+        periods = {"current": current_period}
+        record = read_report_period_cache_record_by_dates(selected_client_id, api_key, periods)
+        if record:
+            summary = dict(record.get("current") or {})
+            summary["cache"] = {
+                "hit": True,
+                "updated_at": str(record.get("updated_at") or ""),
+                "expires_at": str(record.get("expires_at") or ""),
+            }
+            return summary
+
+    summary = build_summary(date_from, date_to, client_id, period_label)
+    summary["cache"] = {"hit": False}
+    return summary
+
+
 def build_default_report(client_id: str | None = None) -> dict[str, Any]:
     selected_client_id, api_key, _account_name = get_ozon_credentials(client_id)
     if not selected_client_id or not api_key:
@@ -2531,20 +2978,265 @@ def build_default_report(client_id: str | None = None) -> dict[str, Any]:
     compare_period = periods["compare"]
     current_from, current_to, current_label = date_range(current_period["from"], current_period["to"])
     compare_from, compare_to, compare_label = date_range(compare_period["from"], compare_period["to"])
-    current_summary = build_summary(
-        current_from,
-        current_to,
-        selected_client_id,
-        current_label,
-    )
-    compare_summary = build_summary(
-        compare_from,
-        compare_to,
-        selected_client_id,
-        compare_label,
-    )
-    record = write_report_cache_record(selected_client_id, api_key, periods, current_summary, compare_summary)
+    with REPORT_BUILD_LOCK:
+        record = read_report_cache_record(selected_client_id, api_key)
+        if record and record.get("periods") == periods and parse_iso_datetime(record.get("expires_at")) > datetime.now(timezone.utc):
+            return report_cache_response(record, hit=True)
+        current_summary = build_summary(
+            current_from,
+            current_to,
+            selected_client_id,
+            current_label,
+        )
+        compare_summary = build_summary(
+            compare_from,
+            compare_to,
+            selected_client_id,
+            compare_label,
+        )
+        record = write_report_cache_record(selected_client_id, api_key, periods, current_summary, compare_summary)
     return report_cache_response(record, hit=False)
+
+
+def default_report_refresh_key(client_id: str) -> str:
+    return f"default:{client_id}"
+
+
+def default_report_retry_after(client_id: str) -> datetime | None:
+    return DEFAULT_REPORT_RETRY_AFTER.get(default_report_refresh_key(client_id))
+
+
+def account_default_report_is_due(account: dict[str, Any], now: datetime) -> bool:
+    client_id = str(account.get("client_id", "")).strip()
+    api_key = str(account.get("api_key", ""))
+    if not client_id or not api_key:
+        return False
+    retry_after = default_report_retry_after(client_id)
+    if retry_after and retry_after > now:
+        return False
+    record = read_report_cache_record(client_id, api_key)
+    if not record:
+        return True
+    if record.get("periods") != default_report_periods():
+        return True
+    return parse_iso_datetime(record.get("expires_at")) <= now
+
+
+def refresh_default_report_account(account: dict[str, Any]) -> None:
+    client_id = str(account.get("client_id", "")).strip()
+    if not client_id:
+        return
+    key = default_report_refresh_key(client_id)
+    if key in REPORT_CACHE_REFRESHING:
+        return
+    REPORT_CACHE_REFRESHING.add(key)
+    REPORT_CACHE_REFRESH_STARTED[key] = datetime.now(timezone.utc)
+    try:
+        build_default_report(client_id)
+        DEFAULT_REPORT_RETRY_AFTER.pop(key, None)
+    except Exception as exc:
+        DEFAULT_REPORT_RETRY_AFTER[key] = datetime.now(timezone.utc) + timedelta(seconds=DEFAULT_REPORT_RETRY_SECONDS)
+        print(f"Default report cache refresh failed for {client_id}: {exc}")
+    finally:
+        REPORT_CACHE_REFRESHING.discard(key)
+        REPORT_CACHE_REFRESH_STARTED.pop(key, None)
+
+
+def start_default_report_background_refresh(account: dict[str, Any]) -> bool:
+    client_id = str(account.get("client_id", "")).strip()
+    if not client_id:
+        return False
+    key = default_report_refresh_key(client_id)
+    if key in REPORT_CACHE_REFRESHING or REPORT_BUILD_LOCK.locked():
+        return False
+    thread = threading.Thread(target=refresh_default_report_account, args=(account,), daemon=True)
+    thread.start()
+    return True
+
+
+def run_default_report_scheduler_once() -> None:
+    now = datetime.now(timezone.utc)
+    try:
+        config = load_config()
+    except Exception as exc:
+        print(f"Default report cache scheduler cannot read config: {exc}")
+        return
+    for account in config.get("accounts", []):
+        if not isinstance(account, dict):
+            continue
+        if not account_default_report_is_due(account, now):
+            continue
+        start_default_report_background_refresh(account)
+
+
+def start_default_report_scheduler() -> None:
+    def worker() -> None:
+        while True:
+            try:
+                run_default_report_scheduler_once()
+            except Exception as exc:
+                print(f"Default report cache scheduler error: {exc}")
+            time.sleep(DEFAULT_REPORT_SCHEDULER_INTERVAL_SECONDS)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def fixed_day_report_refresh_key(client_id: str) -> str:
+    return report_refresh_key(client_id, fixed_day_report_periods())
+
+
+def account_fixed_day_report_is_due(account: dict[str, Any], now: datetime) -> bool:
+    client_id = str(account.get("client_id", "")).strip()
+    api_key = str(account.get("api_key", ""))
+    if not client_id or not api_key:
+        return False
+    periods = fixed_day_report_periods()
+    record = read_report_period_cache_record(client_id, api_key, periods)
+    if not record:
+        return first_fixed_day_report_update_for_day(now) <= now
+    updated_at = parse_iso_datetime(record.get("updated_at"))
+    return next_fixed_day_report_update_after(updated_at) <= now
+
+
+def start_fixed_day_report_background_refresh(account: dict[str, Any]) -> bool:
+    client_id = str(account.get("client_id", "")).strip()
+    api_key = str(account.get("api_key", ""))
+    if not client_id or not api_key:
+        return False
+    return start_report_period_background_refresh(client_id, api_key, fixed_day_report_periods())
+
+
+def run_fixed_day_report_scheduler_once() -> None:
+    now = datetime.now(timezone.utc)
+    try:
+        config = load_config()
+    except Exception as exc:
+        print(f"Fixed day report cache scheduler cannot read config: {exc}")
+        return
+    for account in config.get("accounts", []):
+        if not isinstance(account, dict):
+            continue
+        if not account_fixed_day_report_is_due(account, now):
+            continue
+        start_fixed_day_report_background_refresh(account)
+
+
+def start_fixed_day_report_scheduler() -> None:
+    def worker() -> None:
+        while True:
+            try:
+                run_fixed_day_report_scheduler_once()
+            except Exception as exc:
+                print(f"Fixed day report cache scheduler error: {exc}")
+            time.sleep(DEFAULT_REPORT_SCHEDULER_INTERVAL_SECONDS)
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+def normalize_report_period(date_from_value: str, date_to_value: str) -> dict[str, str]:
+    date_from, date_to, period_label = date_range(date_from_value, date_to_value)
+    return {
+        "from": date_from[:10],
+        "to": date_to[:10],
+        "label": period_label,
+    }
+
+
+def build_cached_report_pair(
+    current_from_value: str,
+    current_to_value: str,
+    compare_from_value: str = "",
+    compare_to_value: str = "",
+    client_id: str | None = None,
+) -> dict[str, Any]:
+    selected_client_id, api_key, _account_name = get_ozon_credentials(client_id)
+    if not selected_client_id or not api_key:
+        raise ValueError("Р’Р»Р°РґРµР»РµС† РµС‰Рµ РЅРµ РЅР°СЃС‚СЂРѕРёР» Client ID Рё API Key РІ Р°РґРјРёРЅРєРµ.")
+
+    current_period = normalize_report_period(current_from_value, current_to_value)
+    periods: dict[str, dict[str, str]] = {"current": current_period}
+    has_compare = bool(compare_from_value and compare_to_value)
+    if has_compare:
+        periods["compare"] = normalize_report_period(compare_from_value, compare_to_value)
+
+    record = read_report_period_cache_record(selected_client_id, api_key, periods)
+    now = datetime.now(timezone.utc)
+    if record and parse_iso_datetime(record.get("expires_at")) > now:
+        return report_cache_response(record, hit=True)
+
+    with REPORT_BUILD_LOCK:
+        record = read_report_period_cache_record(selected_client_id, api_key, periods)
+        if record and parse_iso_datetime(record.get("expires_at")) > datetime.now(timezone.utc):
+            return report_cache_response(record, hit=True)
+        current_from, current_to, current_label = date_range(current_period["from"], current_period["to"])
+        current_summary = build_summary(
+            current_from,
+            current_to,
+            selected_client_id,
+            current_label,
+        )
+        compare_summary = None
+        if has_compare:
+            compare_period = periods["compare"]
+            compare_from, compare_to, compare_label = date_range(compare_period["from"], compare_period["to"])
+            compare_summary = build_summary(
+                compare_from,
+                compare_to,
+                selected_client_id,
+                compare_label,
+            )
+        record = write_report_period_cache_record(selected_client_id, api_key, periods, current_summary, compare_summary)
+    return report_cache_response(record, hit=False)
+
+
+def build_report_pair_for_periods(
+    client_id: str,
+    api_key: str,
+    periods: dict[str, dict[str, str]],
+    *,
+    background: bool = False,
+) -> bool:
+    lock_acquired = REPORT_BUILD_LOCK.acquire(blocking=not background)
+    if not lock_acquired:
+        return False
+    try:
+        record = read_report_period_cache_record(client_id, api_key, periods)
+        if record and parse_iso_datetime(record.get("expires_at")) > datetime.now(timezone.utc):
+            return True
+        current_period = periods["current"]
+        compare_period = periods.get("compare")
+        current_from, current_to, current_label = date_range(current_period["from"], current_period["to"])
+        current_summary = build_summary(current_from, current_to, client_id, current_label)
+        compare_summary = None
+        if compare_period:
+            compare_from, compare_to, compare_label = date_range(compare_period["from"], compare_period["to"])
+            compare_summary = build_summary(compare_from, compare_to, client_id, compare_label)
+        write_report_period_cache_record(client_id, api_key, periods, current_summary, compare_summary)
+        return True
+    finally:
+        REPORT_BUILD_LOCK.release()
+
+
+def report_refresh_key(client_id: str, periods: dict[str, dict[str, str]]) -> str:
+    return f"{client_id}:{report_period_cache_key(periods)}"
+
+
+def start_report_period_background_refresh(client_id: str, api_key: str, periods: dict[str, dict[str, str]]) -> bool:
+    key = report_refresh_key(client_id, periods)
+    if key in REPORT_CACHE_REFRESHING or REPORT_BUILD_LOCK.locked():
+        return False
+    REPORT_CACHE_REFRESHING.add(key)
+    REPORT_CACHE_REFRESH_STARTED[key] = datetime.now(timezone.utc)
+
+    def worker() -> None:
+        try:
+            build_report_pair_for_periods(client_id, api_key, periods, background=True)
+        finally:
+            REPORT_CACHE_REFRESHING.discard(key)
+            REPORT_CACHE_REFRESH_STARTED.pop(key, None)
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True
 
 
 def report_cache_status(account: dict[str, Any]) -> dict[str, Any]:
@@ -2554,15 +3246,20 @@ def report_cache_status(account: dict[str, Any]) -> dict[str, Any]:
     record = read_report_cache_record(client_id, api_key) if client_id and api_key else None
     expires_at = parse_iso_datetime(record.get("expires_at")) if record else None
     period_mismatch = bool(record and record.get("periods") != periods)
-    stale = bool(period_mismatch or (expires_at and expires_at <= datetime.now(timezone.utc)))
+    now = datetime.now(timezone.utc)
+    stale = bool(period_mismatch or (expires_at and expires_at <= now))
+    retry_after = default_report_retry_after(client_id)
+    next_update_at = retry_after if stale and retry_after and retry_after > now else (next_default_report_update_after(now) if stale else expires_at)
+    refresh_key = default_report_refresh_key(client_id)
     record_periods = record.get("periods") if record else periods
     return {
         "client_id": client_id,
         "name": str(account.get("name", "")),
         "has_cache": bool(record),
         "stale": stale,
+        "refreshing": refresh_key in REPORT_CACHE_REFRESHING,
         "updated_at": str(record.get("updated_at") or "") if record else "",
-        "expires_at": expires_at.isoformat() if expires_at else "",
+        "expires_at": next_update_at.isoformat() if next_update_at else "",
         "current_period": (record_periods or periods).get("current", periods["current"]),
         "compare_period": (record_periods or periods).get("compare", periods["compare"]),
         "expected_current_period": periods["current"],
@@ -2570,9 +3267,51 @@ def report_cache_status(account: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def report_period_cache_statuses(account: dict[str, Any]) -> list[dict[str, Any]]:
+    client_id = str(account.get("client_id", "")).strip()
+    api_key = str(account.get("api_key", ""))
+    if not client_id or not api_key:
+        return []
+    statuses: list[dict[str, Any]] = []
+    now = datetime.now(timezone.utc)
+    periods = fixed_day_report_periods()
+    record = read_report_period_cache_record(client_id, api_key, periods)
+    current_period = periods["current"]
+    compare_period = periods.get("compare", {"from": "", "to": "", "label": ""})
+    updated_at = parse_iso_datetime(record.get("updated_at")) if record else None
+    expires_at = next_fixed_day_report_update_after(updated_at) if updated_at else first_fixed_day_report_update_for_day(now)
+    stale = bool(not record or expires_at <= now)
+    refresh_key = report_refresh_key(client_id, periods)
+    refreshing = refresh_key in REPORT_CACHE_REFRESHING
+    if stale and not refreshing and expires_at <= now:
+        started = start_report_period_background_refresh(client_id, api_key, periods)
+        if not started and REPORT_BUILD_LOCK.locked():
+            refreshing = True
+        refreshing = refresh_key in REPORT_CACHE_REFRESHING
+        if REPORT_BUILD_LOCK.locked() and not refreshing:
+            refreshing = True
+    statuses.append(
+        {
+            "client_id": client_id,
+            "name": str(account.get("name", "")),
+            "has_cache": bool(record),
+            "stale": stale,
+            "refreshing": refreshing,
+            "stopped": False,
+            "updated_at": str(record.get("updated_at") or "") if record else "",
+            "expires_at": expires_at.isoformat(),
+            "next_attempt_at": expires_at.isoformat(),
+            "current_period": current_period,
+            "compare_period": compare_period,
+            "cache_kind": "period",
+        }
+    )
+    return statuses
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
-        print(f"{self.address_string()} - {format % args}")
+        return
 
     def send_json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -2648,7 +3387,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 config = load_config()
                 self.send_json(
                     200,
-                    build_summary(date_from, date_to, selected_client_id_for_user(user, config), period_label),
+                    build_summary_with_period_cache(date_from, date_to, selected_client_id_for_user(user, config), period_label),
+                )
+            except Exception as exc:
+                self.send_json(400, {"error": str(exc)})
+            return
+
+        if path == "/api/summary-cached":
+            user = self.require_user()
+            if not user:
+                return
+            try:
+                payload = json.loads(self.rfile.read(length).decode("utf-8"))
+                config = load_config()
+                self.send_json(
+                    200,
+                    build_cached_report_pair(
+                        str(payload.get("date_from", "")).strip(),
+                        str(payload.get("date_to", "")).strip(),
+                        str(payload.get("compare_date_from", "")).strip(),
+                        str(payload.get("compare_date_to", "")).strip(),
+                        selected_client_id_for_user(user, config),
+                    ),
                 )
             except Exception as exc:
                 self.send_json(400, {"error": str(exc)})
@@ -2979,6 +3739,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if path == "/api/ozon-endpoints":
+            user = self.require_user()
+            if not user:
+                return
+            config = load_config()
+            self.send_json(200, api_status_payload(accounts_for_user(config, user)))
+            return
+
         if path == "/api/cache":
             user = self.require_user()
             if not user:
@@ -2986,6 +3754,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             config = load_config()
             selected_client_id = selected_client_id_for_user(user, config)
             accounts = accounts_for_user(config, user)
+            for account in accounts:
+                if account_default_report_is_due(account, datetime.now(timezone.utc)):
+                    start_default_report_background_refresh(account)
+                if account_fixed_day_report_is_due(account, datetime.now(timezone.utc)):
+                    start_fixed_day_report_background_refresh(account)
             self.send_json(
                 200,
                 {
@@ -2993,7 +3766,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     "ttl_seconds": TNVED_CACHE_TTL_SECONDS,
                     "report_ttl_seconds": REPORT_CACHE_TTL_SECONDS,
                     "items": [tnved_cache_status(account) for account in accounts],
-                    "report_items": [report_cache_status(account) for account in accounts],
+                    "report_items": [
+                        report_item
+                        for account in accounts
+                        for report_item in [report_cache_status(account), *report_period_cache_statuses(account)]
+                    ],
                 },
             )
             return
@@ -3057,6 +3834,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data = target.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        if target.suffix in {".html", ".js", ".css"}:
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -3066,6 +3847,9 @@ def main() -> int:
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8765
     host = sys.argv[2] if len(sys.argv) > 2 else "127.0.0.1"
     server = ThreadingHTTPServer((host, port), DashboardHandler)
+    start_tnved_scheduler()
+    start_default_report_scheduler()
+    start_fixed_day_report_scheduler()
     visible_host = "127.0.0.1" if host in {"0.0.0.0", ""} else host
     print(f"Ozon dashboard: http://{visible_host}:{port}")
     print("Ключи вводятся в браузере и не сохраняются на диск.")
