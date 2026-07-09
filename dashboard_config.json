@@ -1,0 +1,28 @@
+{
+  "ozon": {
+    "client_id": "3801",
+    "api_key": "5914cd4f-0abb-4790-a0ca-16107175d01b"
+  },
+  "users": [
+    {
+      "login": "filkina-gramota3801",
+      "role": "viewer",
+      "password_hash": "pbkdf2_sha256$62d9001a695ac34361957b904eb1ee43$BPZBUPAwuaE6/xbXtcJw9V2ZOv5v5NWP0DQLwP//tPo=",
+      "allowed_client_ids": [
+        "3801"
+      ]
+    }
+  ],
+  "accounts": [
+    {
+      "client_id": "3801",
+      "name": "Филькина Грамота",
+      "api_key": "5914cd4f-0abb-4790-a0ca-16107175d01b",
+      "performance": {
+        "client_id": "",
+        "client_secret": ""
+      }
+    }
+  ],
+  "active_client_id": "3801"
+}
